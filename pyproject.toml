@@ -3,6 +3,8 @@ name = "gpuwarden"
 version = "0.1.0"
 description = "Scheduled up/down, one-shot pods and verified teardown for rented RunPod GPUs"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []          # stdlib only — the heavy lifting is runpodctl + curl on the host
 
 [project.scripts]

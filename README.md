@@ -115,4 +115,4 @@ and balance.
 
 ## License
 
-Unlicensed for now — add one before publishing.
+MIT — see [LICENSE](LICENSE).
