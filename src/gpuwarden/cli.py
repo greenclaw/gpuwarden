@@ -67,8 +67,7 @@ def save_conf(c: dict) -> None:
 
 
 def load_keys(c: dict) -> dict:
-    """Env for cloud.sh: real env wins; otherwise read KEYS_FILE. cloud.sh skips its keyring
-    self-wrap as soon as RUNPOD_API_KEY is set (cloud.sh:26)."""
+    """Env for cloud.sh: the real environment wins, otherwise read KEYS_FILE."""
     env = dict(os.environ)
     kf = Path(os.path.expanduser(c["KEYS_FILE"]))
     if not env.get("RUNPOD_API_KEY") and kf.exists():
@@ -107,7 +106,7 @@ def status(c: dict):
     """-> (state, balance_or_None, raw); state is "pods" | "none" | "unknown".
 
     UNKNOWN is never collapsed into "none". Failing to *observe* must not read as observing zero:
-    cloud.sh runs under `set -e`, so an auth failure / locked keyring / API 5xx yields empty stdout,
+    cloud.sh runs under `set -e`, so an auth failure or an API 5xx yields empty stdout,
     which is byte-identical to a healthy empty account. Consumers fail closed on unknown — a skipped
     `up` costs nothing, whereas a false "no pods" either duplicates a billing pod or declares a
     teardown VERIFIED while the pod keeps running.
