@@ -77,6 +77,8 @@ only always-on machine you have is already busy running something else:
 
 ```bash
 mkdir -p config models          # put keys.env + scheduler.conf in config/, model dirs in models/
+echo "TZ=Europe/Moscow" > .env  # REQUIRED: cron fires in container-local time; Debian cron ignores
+                                # CRON_TZ, and without this a recreate silently reverts to UTC
 docker compose up -d
 docker compose logs -f          # the rendered schedule is printed at startup
 docker compose down             # gone, nothing left behind
