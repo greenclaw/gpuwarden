@@ -5,7 +5,7 @@ FROM python:3.12-slim
 ARG RUNPODCTL_VERSION=v2.7.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        bash curl ca-certificates cron tini \
+        bash curl ca-certificates cron tini tzdata \
     && curl -fsSL -o /usr/local/bin/runpodctl \
         "https://github.com/runpod/runpodctl/releases/download/${RUNPODCTL_VERSION}/runpodctl-linux-amd64" \
     && chmod +x /usr/local/bin/runpodctl \
