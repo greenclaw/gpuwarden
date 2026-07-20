@@ -1,0 +1,17 @@
+# Self-contained scheduler: one container that owns the schedule and tears pods down on time.
+# The host gains no cron daemon and no system packages — remove it with `docker compose down`.
+services:
+  gpuwarden:
+    build: .
+    image: gpuwarden:latest
+    container_name: gpuwarden
+    restart: unless-stopped
+    volumes:
+      # Config + keys. Create keys.env yourself (chmod 600); it is never generated or committed.
+      - ./config:/config
+      # Your model configs: <label>/serve.env for each servable model.
+      - ./models:/models
+    environment:
+      - GPUWARDEN_CONF_DIR=/config
+      - TZ=${TZ:-UTC}          # cron fires in local time — set this to your scheduling timezone
+    # No GPU, no Docker socket, no privileged mode: it only makes HTTPS calls to RunPod.

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+*.egg-info/
+
+# runtime state — never commit
+config/
+models/
+keys.env
+scheduler.conf
+.env
