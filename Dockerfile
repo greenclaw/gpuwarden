@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL -o /usr/local/bin/runpodctl \
         "https://github.com/runpod/runpodctl/releases/download/${RUNPODCTL_VERSION}/runpodctl-linux-amd64" \
     && chmod +x /usr/local/bin/runpodctl \
-    && apt-get purge -y curl && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
+# curl stays: cloud.sh needs it at runtime (GraphQL balance, pod health polling)
 
 COPY . /src
 RUN pip install --no-cache-dir /src && rm -rf /src
