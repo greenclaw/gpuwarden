@@ -296,7 +296,9 @@ def cmd_view(c, _a) -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="RunPod pod scheduler (server-side source of truth)")
+    from . import metal
+    p = argparse.ArgumentParser(description="GPU serve lifecycle: rented pods (up/down) "
+                                            "and your own cards (provision/serve/verify)")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name in ("view", "install", "uninstall", "up", "down"):
         sub.add_parser(name)
@@ -306,10 +308,21 @@ def main() -> int:
     s.add_argument("--tz"); s.add_argument("--min-balance", dest="min_balance")
     s.add_argument("--models-dir", dest="models_dir")
     s.add_argument("--warmup-cmd", dest="warmup_cmd")
+    s = sub.add_parser("provision", help="diagnose (or --apply: fix) driver/docker/toolkit on this box")
+    s.add_argument("--apply", action="store_true")
+    s = sub.add_parser("render", help="serve.env -> deployment file for a target")
+    s.add_argument("label"); s.add_argument("--target", choices=("compose", "k8s"), default="compose")
+    s.add_argument("--stdout", action="store_true")
+    s = sub.add_parser("serve", help="serve <label> on THIS box: render + up + wait + verify")
+    s.add_argument("label")
+    s = sub.add_parser("verify", help="health + engine flags + tool-calling acceptance")
+    s.add_argument("label", nargs="?"); s.add_argument("--url")
     a = p.parse_args()
     c = load_conf()
     return {"view": cmd_view, "set": cmd_set, "install": cmd_install, "uninstall": cmd_uninstall,
-            "up": cmd_up, "down": cmd_down}[a.cmd](c, a)
+            "up": cmd_up, "down": cmd_down, "provision": metal.cmd_provision,
+            "render": metal.cmd_render, "serve": metal.cmd_serve,
+            "verify": metal.cmd_verify}[a.cmd](c, a)
 
 
 if __name__ == "__main__":

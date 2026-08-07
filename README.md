@@ -87,6 +87,25 @@ docker compose down             # gone, nothing left behind
 The alternative shape — host cron calling `docker run --rm gpuwarden gwctl up` — also works and keeps
 the schedule on the host. Pick whichever you'd rather debug at 2am.
 
+## Serve on your own GPU (metal)
+
+The same `serve.env` that drives a rented pod can drive a card you own. The config is the
+invariant; the deployment target is just a renderer — so your model definitions survive an
+infra move (compose today, Kubernetes tomorrow) unchanged:
+
+```bash
+gwctl provision              # diagnose driver/docker/toolkit; --apply executes the fixes
+gwctl serve my-model         # render compose + up + wait healthy + verify
+gwctl render my-model --target k8s   # reviewed starting-point Deployment+Service
+gwctl verify my-model        # or --url http://host:8000 — works against ANY OpenAI endpoint
+```
+
+`verify` is the part that keeps you honest: beyond `/health` it checks that the *engine* enabled
+what the config asked for (vLLM silently skips prefix caching on hybrid-Mamba models unless told),
+and runs a real tool-calling request end to end. `provision` knows the Blackwell trap: the
+proprietary kernel module binds to a GB2xx card but cannot initialize it — `nvidia-smi` reports
+"No devices were found" while everything else looks healthy; the fix is the `-open` driver.
+
 ## Remote control
 
 The scheduler should live on a machine that is always on; a laptop that sleeps will miss its own
