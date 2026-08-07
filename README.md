@@ -30,6 +30,28 @@ Three failure modes, each of which has actually cost money:
 - **The endpoint with no password.** Creating a pod without a bearer token would publish an LLM on a
   public URL. `gwctl` refuses to create one, rather than serving it and hoping nobody notices.
 
+## How it compares
+
+The neighborhood splits into two camps, and gpuwarden sits in the gap between them (survey
+2026-08; stars/activity change, the shapes don't):
+
+| | schedule semantics | teardown | serving | shape |
+|---|---|---|---|---|
+| [runpod-auto-stop](https://github.com/stlaurentjr/runpod-auto-stop), [runpod-budget](https://github.com/gitlost-murali/runpod-budget) | idle/runtime **stop only** | fire and forget | — | single script |
+| [Runpod-Idle-Pod-Monitor](https://github.com/runpod/Runpod-Idle-Pod-Monitor) (official) | reactive idle monitor | fire and forget | — | monitor pod + web UI |
+| [SkyPilot](https://github.com/skypilot-org/skypilot) / [dstack](https://github.com/dstackai/dstack) | idle-based autostop/autodown | not verified | recipes / services, replicas, autoscaling | multi-cloud platform with a controller |
+| **gpuwarden** | **workday clock**: `up` weekday mornings, `down` *every* evening | **verified, fail-closed** (tri-state, retries, loud failure) | `serve.env` invariant → compose/k8s renderers + engine-flag & tool-calling `verify` | one cron block + a CLI |
+
+What the others don't do: nobody models a *workday* (every tool in the small camp waits for
+idleness; a pod idling at 2am has already cost you the night), and nobody verifies that a
+teardown actually happened — they call the stop API and believe it. Those two are the reasons
+this tool exists.
+
+What the platforms do better: SkyPilot shops across clouds for the cheapest GPU, does replicas,
+autoscaling and spot; dstack adds a full control plane. If you need fleet orchestration, use
+them — gpuwarden is deliberately the small tool for the "one team, one model, rented by the
+hour" shape, where the platform's controller VM would cost more than the problem.
+
 ## Install
 
 ```bash
