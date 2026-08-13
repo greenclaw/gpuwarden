@@ -27,8 +27,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
-
 
 # ---------- serve.env → vLLM invocation (shared by every render target) ----------
 
@@ -47,7 +45,7 @@ def read_serve_env(c: dict, label: str) -> dict:
         if not e.get(req):
             sys.exit(f"{path}: serve.env must set {req}")
     if "@sha256:" not in e["IMAGE"]:
-        print(f"WARN: IMAGE is not pinned by digest — a tag can be re-pushed under you", file=sys.stderr)
+        print("WARN: IMAGE is not pinned by digest — a tag can be re-pushed under you", file=sys.stderr)
     e["_label"], e["_path"] = label, path
     return e
 

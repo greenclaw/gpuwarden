@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1090  # sources the user's serve.env, path known only at runtime
 # cloud.sh — RunPod backend for gpuwarden: serve a model from its serve.env on a rented GPU pod.
 #
 #   cloud.sh up <label> [--gpu "NVIDIA RTX PRO 5000 Blackwell"] [--hours 6] [--cloud COMMUNITY]
