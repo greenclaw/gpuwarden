@@ -1,7 +1,12 @@
-# gpuwarden
+# GPUWarden
+
+[![CI](https://github.com/greenclaw/gpuwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/greenclaw/gpuwarden/actions/workflows/ci.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 Rented GPUs bill by the hour, and the expensive failure is never a crash — it's a pod nobody
-remembered to stop. `gpuwarden` brings a [RunPod](https://runpod.io) pod up on a schedule, tears it
+remembered to stop. GPUWarden brings a [RunPod](https://runpod.io) pod up on a schedule, tears it
 down **every** evening, and refuses to claim success unless it has *verified* the pod is gone.
 
 The command is `gwctl`; the package is `gpuwarden`.
@@ -32,7 +37,7 @@ Three failure modes, each of which has actually cost money:
 
 ## How it compares
 
-The neighborhood splits into two camps, and gpuwarden sits in the gap between them (survey
+The neighborhood splits into two camps, and GPUWarden sits in the gap between them (survey
 2026-08; stars/activity change, the shapes don't):
 
 | | schedule semantics | teardown | serving | shape |
@@ -40,7 +45,7 @@ The neighborhood splits into two camps, and gpuwarden sits in the gap between th
 | [runpod-auto-stop](https://github.com/stlaurentjr/runpod-auto-stop), [runpod-budget](https://github.com/gitlost-murali/runpod-budget) | idle/runtime **stop only** | fire and forget | — | single script |
 | [Runpod-Idle-Pod-Monitor](https://github.com/runpod/Runpod-Idle-Pod-Monitor) (official) | reactive idle monitor | fire and forget | — | monitor pod + web UI |
 | [SkyPilot](https://github.com/skypilot-org/skypilot) / [dstack](https://github.com/dstackai/dstack) | idle-based autostop/autodown | not verified | recipes / services, replicas, autoscaling | multi-cloud platform with a controller |
-| **gpuwarden** | **workday clock**: `up` weekday mornings, `down` *every* evening | **verified, fail-closed** (tri-state, retries, loud failure) | `serve.env` invariant → compose/k8s renderers + engine-flag & tool-calling `verify` | one cron block + a CLI |
+| **GPUWarden** | **workday clock**: `up` weekday mornings, `down` *every* evening | **verified, fail-closed** (tri-state, retries, loud failure) | `serve.env` invariant → compose/k8s renderers + engine-flag & tool-calling `verify` | one cron block + a CLI |
 
 What the others don't do: nobody models a *workday* (every tool in the small camp waits for
 idleness; a pod idling at 2am has already cost you the night), and nobody verifies that a
@@ -49,7 +54,7 @@ this tool exists.
 
 What the platforms do better: SkyPilot shops across clouds for the cheapest GPU, does replicas,
 autoscaling and spot; dstack adds a full control plane. If you need fleet orchestration, use
-them — gpuwarden is deliberately the small tool for the "one team, one model, rented by the
+them — GPUWarden is deliberately the small tool for the "one team, one model, rented by the
 hour" shape, where the platform's controller VM would cost more than the problem.
 
 ## Install

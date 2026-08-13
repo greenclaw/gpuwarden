@@ -15,7 +15,12 @@ Two modes, one mechanism (cron):
     gwctl install | uninstall      # manage the marker-delimited crontab block
     gwctl up | down                # the actions cron calls (also fine by hand)
 """
-import argparse, os, re, subprocess, sys, time
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 CLOUD_SH = Path(__file__).resolve().with_name("cloud.sh")   # ships inside the installed package
@@ -220,7 +225,7 @@ def strip_block(text: str) -> str:
     """Remove our managed block, preserving every foreign line. A truncated block (hand-edit or an
     interrupted write) must NOT swallow everything below it — drop only the stray marker."""
     lines = text.splitlines()
-    b = next((i for i, l in enumerate(lines) if l.strip() == BEGIN), None)
+    b = next((i for i, ln in enumerate(lines) if ln.strip() == BEGIN), None)
     if b is None:
         return "\n".join(lines).strip()
     e = next((i for i in range(b + 1, len(lines)) if lines[i].strip() == END), None)
@@ -284,14 +289,14 @@ def cmd_view(c, _a) -> int:
         print(f"  {k:<12} = {c[k]}")
     installed = BEGIN in read_crontab()
     print(f"\ncron        : {'INSTALLED' if installed else 'NOT installed'}")
-    print("\n".join("  " + l for l in render_cron(c).splitlines()))
+    print("\n".join("  " + ln for ln in render_cron(c).splitlines()))
     kf = Path(os.path.expanduser(c["KEYS_FILE"]))
     print(f"\nkeys file   : {kf} {'found' if kf.exists() else 'MISSING (or use real env vars)'}")
     state, bal, raw = status(c)
     print(f"\nlive state  : {state}" + (f" | balance ${bal:.2f}" if bal is not None else ""))
     if state == "unknown":
         print("  ⚠ could not read RunPod state (auth/keys/network?) — up refuses and down cannot verify")
-    print("\n".join("  " + l for l in raw.splitlines()) or "  (no answer)")
+    print("\n".join("  " + ln for ln in raw.splitlines()) or "  (no answer)")
     return 0
 
 
@@ -303,20 +308,23 @@ def main() -> int:
     for name in ("view", "install", "uninstall", "up", "down"):
         sub.add_parser(name)
     s = sub.add_parser("set")
-    s.add_argument("--up"); s.add_argument("--down"); s.add_argument("--sweep")
-    s.add_argument("--model"); s.add_argument("--days", choices=list(DAY_CRON))
-    s.add_argument("--tz"); s.add_argument("--min-balance", dest="min_balance")
+    for opt in ("--up", "--down", "--sweep", "--model", "--tz"):
+        s.add_argument(opt)
+    s.add_argument("--days", choices=list(DAY_CRON))
+    s.add_argument("--min-balance", dest="min_balance")
     s.add_argument("--models-dir", dest="models_dir")
     s.add_argument("--warmup-cmd", dest="warmup_cmd")
     s = sub.add_parser("provision", help="diagnose (or --apply: fix) driver/docker/toolkit on this box")
     s.add_argument("--apply", action="store_true")
     s = sub.add_parser("render", help="serve.env -> deployment file for a target")
-    s.add_argument("label"); s.add_argument("--target", choices=("compose", "k8s"), default="compose")
+    s.add_argument("label")
+    s.add_argument("--target", choices=("compose", "k8s"), default="compose")
     s.add_argument("--stdout", action="store_true")
     s = sub.add_parser("serve", help="serve <label> on THIS box: render + up + wait + verify")
     s.add_argument("label")
     s = sub.add_parser("verify", help="health + engine flags + tool-calling acceptance")
-    s.add_argument("label", nargs="?"); s.add_argument("--url")
+    s.add_argument("label", nargs="?")
+    s.add_argument("--url")
     a = p.parse_args()
     c = load_conf()
     return {"view": cmd_view, "set": cmd_set, "install": cmd_install, "uninstall": cmd_uninstall,
