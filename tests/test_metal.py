@@ -2,6 +2,7 @@
 
 Each case is a state a real box was caught in; the parsers must name it, not guess."""
 from gpuwarden.metal import (
+    container_crashed,
     driver_drift,
     engine_facts,
     module_version,
@@ -95,3 +96,19 @@ def test_engine_facts_from_startup_log():
 
 def test_engine_facts_empty_log_gives_empty_facts():
     assert engine_facts("") == {}
+
+
+def test_crash_detected_when_container_exited():
+    # a new vLLM version dying at startup must fail serve now, not after a 60-minute health wait
+    assert container_crashed("exited 0") == "container exited"
+
+
+def test_crash_detected_when_restart_policy_loops_it():
+    # restart: unless-stopped turns a startup crash into a quiet restart loop
+    assert container_crashed("running 3") == "container restarted 3x during startup"
+    assert container_crashed("restarting 1") == "container restarted 1x during startup"
+
+
+def test_healthy_start_is_not_a_crash():
+    assert container_crashed("running 0") is None
+    assert container_crashed("") is None          # inspect raced the create — keep waiting

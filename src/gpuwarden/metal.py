@@ -211,6 +211,21 @@ def serve_claimants(running: list, own: str) -> list:
             if c.get("gpu") and "vllm" in c.get("image", "") and c["name"] != own]
 
 
+def container_crashed(state: str):
+    """`docker inspect -f '{{.State.Status}} {{.RestartCount}}'` -> why startup failed, or None.
+    With restart: unless-stopped a dying engine does not stay dead — it loops quietly, so a
+    restart count above zero during startup is already the failure."""
+    parts = state.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+    status, restarts = parts[0], int(parts[1])
+    if status in ("exited", "dead"):
+        return "container exited"
+    if restarts > 0:
+        return f"container restarted {restarts}x during startup"
+    return None
+
+
 def engine_facts(log: str) -> dict:
     """What the engine actually chose, from its startup log — the flags on the command line
     are intent; these lines are the outcome (dtype, block size, kernel fallbacks)."""
@@ -297,11 +312,20 @@ def cmd_serve(c, a) -> int:
         log(c, f"serve: docker compose FAILED rc={r.returncode}\n{(r.stderr or '').strip()[-600:]}")
         return 1
     base = f"http://127.0.0.1:{e.get('PORT', '8000')}"
-    for i in range(120):                       # 120 x 30s = 60 min ceiling
+    for i in range(360):                       # 360 x 10s = 60 min ceiling
         code, _ = _get(base + "/health")
         if code == 200:
             break
-        time.sleep(30)
+        st = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}} {{.RestartCount}}", own],
+                            capture_output=True, text=True).stdout.strip()
+        why = container_crashed(st)
+        if why:
+            tail = subprocess.run(["docker", "logs", "--tail", "30", own],
+                                  capture_output=True, text=True)
+            log(c, f"serve: FAILED — {why}; last log lines:\n"
+                   f"{((tail.stdout or '') + (tail.stderr or '')).strip()[-2500:]}")
+            return 1
+        time.sleep(10)
     else:
         log(c, f"serve: NOT healthy after 60 min — docker logs gw-{a.label}")
         return 1
