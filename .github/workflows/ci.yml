@@ -25,3 +25,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uvx --from . gwctl --help
+
+  test:
+    # Box-state parsers are fed the exact strings real boxes produced (driver drift, stale CDI).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --with pytest pytest -q tests

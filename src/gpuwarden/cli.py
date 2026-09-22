@@ -322,9 +322,15 @@ def main() -> int:
     s.add_argument("--stdout", action="store_true")
     s = sub.add_parser("serve", help="serve <label> on THIS box: render + up + wait + verify")
     s.add_argument("label")
-    s = sub.add_parser("verify", help="health + engine flags + tool-calling acceptance")
+    s.add_argument("--replace", action="store_true",
+                   help="stop other vLLM serves holding the GPU first (one card = one serve)")
+    s.add_argument("--recreate", action="store_true",
+                   help="restart even if already up: fresh engine, empty prefix cache")
+    s = sub.add_parser("verify", help="health + engine facts/flags + tool-calling acceptance")
     s.add_argument("label", nargs="?")
     s.add_argument("--url")
+    s.add_argument("--container", help="read engine facts from this container "
+                                       "(default gw-<label>; use for serves not started by gwctl)")
     a = p.parse_args()
     c = load_conf()
     return {"view": cmd_view, "set": cmd_set, "install": cmd_install, "uninstall": cmd_uninstall,

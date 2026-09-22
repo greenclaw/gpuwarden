@@ -8,8 +8,10 @@ acceptance layer survives the move untouched.
 
     gwctl provision [--apply]        # diagnose (or install) driver/docker/toolkit on this box
     gwctl render <label> [--target compose|k8s] [--stdout]
-    gwctl serve  <label>             # render + up + wait healthy + verify
-    gwctl verify <label | --url URL> # health, /v1/models, engine flags, tool-calling acceptance
+    gwctl serve  <label> [--replace] # render + up + wait healthy + verify (--replace: stop the serve
+                                     #   already holding the card — one GPU, one serve)
+    gwctl verify <label | --url URL> [--container NAME]
+                                     # health, /v1/models, engine facts + flags, tool-calling acceptance
 
 Hard-won rules this module encodes (each cost a real incident):
   * Blackwell (GB2xx) initializes ONLY with the open kernel module. The proprietary one binds and
@@ -17,6 +19,9 @@ Hard-won rules this module encodes (each cost a real incident):
   * vLLM does NOT auto-enable prefix caching for hybrid-Mamba models (Qwen3.6-A3B & friends);
     omit --enable-prefix-caching and you silently serve a config no benchmark was taken on.
   * An empty VLLM_API_KEY means an unauthenticated OpenAI endpoint — refuse, never hope.
+  * A driver upgrade under a running serve is invisible until the next restart: the loaded module
+    stays old, userspace goes new, NVML refuses to init, and the stale CDI spec still names the old
+    libraries. provision checks module-vs-userspace, CDI mount sources, and that the driver is held.
 """
 import json
 import os
@@ -172,6 +177,65 @@ def cmd_render(c, a) -> int:
     return 0
 
 
+# ---------- box-state parsers (pure: every input is text a real box produced) ----------
+
+def module_version(proc_version: str):
+    """Version of the kernel module actually loaded, from /proc/driver/nvidia/version."""
+    m = re.search(r"Kernel Module\b.*?\s(\d+\.\d+(?:\.\d+)?)\s", proc_version)
+    return m.group(1) if m else None
+
+
+def driver_drift(module_ver, nvml_libs: list):
+    """Userspace upgraded under a loaded module: NVML refuses to init, and no container can claim
+    the GPU — yet a serve that already held the card keeps running, so the drift stays invisible
+    until the next restart or reboot. None when there is no evidence either way."""
+    lib_vers = sorted({m.group(1) for p in nvml_libs
+                       if (m := re.search(r"libnvidia-ml\.so\.(\d+\.\d+(?:\.\d+)?)$", p))})
+    if not module_ver or not lib_vers or lib_vers == [module_ver]:
+        return None
+    return f"loaded kernel module {module_ver}, userspace driver {', '.join(lib_vers)}"
+
+
+def stale_cdi_paths(spec_text: str, exists=os.path.exists) -> list:
+    """Mount sources a CDI spec names but the host no longer has. The spec is a snapshot taken
+    at generation time: a driver upgrade renames every library (libEGL_nvidia.so.<old>), and a
+    stopped nvidia-persistenced removes its socket — either way container create fails."""
+    paths = re.findall(r"hostPath:\s*(\S+)", spec_text)
+    return [p for p in dict.fromkeys(paths) if not exists(p)]
+
+
+def serve_claimants(running: list, own: str) -> list:
+    """Other vLLM serves on the card. One GPU = one serve: two would fight over VRAM and the
+    port. Monitoring that merely reads the GPU (dcgm-exporter) is not a rival."""
+    return [c["name"] for c in running
+            if c.get("gpu") and "vllm" in c.get("image", "") and c["name"] != own]
+
+
+def engine_facts(log: str) -> dict:
+    """What the engine actually chose, from its startup log — the flags on the command line
+    are intent; these lines are the outcome (dtype, block size, kernel fallbacks)."""
+    f = {}
+    pats = {
+        "vllm_version": (r"LLM engine \(v([\d.]+\w*)\)", str),
+        "kv_cache_tokens": (r"GPU KV cache size: ([\d,]+) tokens", lambda s: int(s.replace(",", ""))),
+        "kv_cache_dtype": (r"kv_cache_dtype=(\w+)", str),
+        "attention_block_size": (r"Setting attention block size to (\d+) tokens", int),
+        "mamba_cache_mode": (r"Mamba cache mode is set to '(\w+)'", str),
+        "nvfp4_moe_backend": (r"Using '(\w+)' NvFp4 MoE backend", str),
+        "enable_prefix_caching": (r"enable_prefix_caching=(\w+)", str),
+    }
+    for key, (pat, conv) in pats.items():
+        hits = re.findall(pat, log)
+        if hits:
+            f[key] = conv(hits[-1])            # last start wins if the log spans restarts
+    m = re.findall(r"Maximum concurrency for ([\d,]+) tokens per request: ([\d.]+x)", log)
+    if m:
+        f["max_concurrency"] = f"{m[-1][1]} @ {m[-1][0]}"
+    if "does not have native support for FP4" in log:
+        f["fp4_native"] = False
+    return f
+
+
 # ---------- serve + verify ----------
 
 def _vllm_key(c: dict) -> str:
@@ -197,14 +261,37 @@ def _get(url: str, key: str = "", timeout: int = 8):
         return 0, ""
 
 
+def running_containers() -> list:
+    r = subprocess.run(["bash", "-c", "docker ps -q | xargs -r docker inspect --format "
+                        "'{{.Name}}\t{{.Config.Image}}\t{{json .HostConfig.DeviceRequests}}'"],
+                       capture_output=True, text=True)
+    out = []
+    for ln in (r.stdout or "").splitlines():
+        name, image, dev = (ln.split("\t", 2) + ["", ""])[:3]
+        out.append({"name": name.lstrip("/"), "image": image, "gpu": "gpu" in dev})
+    return out
+
+
 def cmd_serve(c, a) -> int:
     from .cli import log
     e = read_serve_env(c, a.label)
     key = _vllm_key(c)
+    own = f"gw-{a.label}"
+    rivals = serve_claimants(running_containers(), own=own)
+    if rivals and not getattr(a, "replace", False):
+        log(c, f"serve: REFUSING — the GPU already runs {rivals}; one card = one serve. "
+               "Re-run with --replace to stop them first.")
+        return 1
+    for r in rivals:
+        log(c, f"serve: --replace: stopping {r} (bring it back later with `docker start {r}`)")
+        subprocess.run(["docker", "stop", r], capture_output=True, text=True)
     compose = e["_path"].with_name("compose.yaml")
     compose.write_text(render_compose(e))
     log(c, f"serve: {a.label} — compose rendered, starting (cold start = pull + weights + compile)")
-    r = subprocess.run(["docker", "compose", "-f", str(compose), "up", "-d"],
+    up = ["docker", "compose", "-f", str(compose), "up", "-d"]
+    if getattr(a, "recreate", False):          # fresh engine = empty prefix cache, same config
+        up.append("--force-recreate")
+    r = subprocess.run(up,
                        env={**os.environ, "VLLM_API_KEY": key}, capture_output=True, text=True)
     if r.returncode != 0:
         log(c, f"serve: docker compose FAILED rc={r.returncode}\n{(r.stderr or '').strip()[-600:]}")
@@ -219,22 +306,25 @@ def cmd_serve(c, a) -> int:
         log(c, f"serve: NOT healthy after 60 min — docker logs gw-{a.label}")
         return 1
     log(c, f"serve: healthy at {base}")
-    return _verify(c, e, base, key)
+    return _verify(c, e, base, key, container=own)
 
 
 def cmd_verify(c, a) -> int:
+    container = getattr(a, "container", None)
     if a.url:
-        return _verify(c, None, a.url.rstrip("/"), _vllm_key(c))
+        return _verify(c, None, a.url.rstrip("/"), _vllm_key(c), container=container)
     if not a.label:
         sys.exit("verify: give a <label> or --url")
     e = read_serve_env(c, a.label)
-    return _verify(c, e, f"http://127.0.0.1:{e.get('PORT', '8000')}", _vllm_key(c))
+    return _verify(c, e, f"http://127.0.0.1:{e.get('PORT', '8000')}", _vllm_key(c),
+                   container=container or f"gw-{a.label}")
 
 
-def _verify(c, e, base: str, key: str) -> int:
+def _verify(c, e, base: str, key: str, container=None) -> int:
     """Target-agnostic acceptance: works against compose, k8s, or a rented pod — anything with a URL.
-    With a local serve.env (e) it additionally proves the ENGINE runs the flags the config asked for,
-    because 'the flag was on the command line' is not 'the engine enabled it' (hybrid-Mamba APC)."""
+    Next to the container it additionally reports what the ENGINE chose and proves it runs the
+    flags the config asked for, because 'the flag was on the command line' is not 'the engine
+    enabled it' (hybrid-Mamba APC). `container` covers serves not started by gwctl."""
     from .cli import log
     problems = []
     code, body = _get(base + "/v1/models", key)
@@ -246,13 +336,20 @@ def _verify(c, e, base: str, key: str) -> int:
     if e and e["SERVED_NAME"] not in served:
         problems.append(f"served names {served} lack SERVED_NAME {e['SERVED_NAME']}")
 
-    if e:  # engine-flag check, only meaningful next to the container
-        r = subprocess.run(["docker", "logs", f"gw-{e['_label']}"], capture_output=True, text=True)
-        m = re.findall(r"enable_prefix_caching=(\w+)", (r.stdout or "") + (r.stderr or ""))
-        want = e.get("PREFIX_CACHING", "1") != "0"
-        if m and (m[-1] == "True") != want:
-            problems.append(f"engine enable_prefix_caching={m[-1]} but serve.env wants {want} "
-                            "(vLLM does not auto-enable APC for hybrid-Mamba — check the flag)")
+    if container:  # engine facts + flag check, only meaningful next to the container
+        r = subprocess.run(["docker", "logs", container], capture_output=True, text=True)
+        facts = engine_facts((r.stdout or "") + (r.stderr or ""))
+        for k, v in facts.items():
+            log(c, f"verify: engine {k} = {v}")
+        if facts.get("fp4_native") is False:
+            log(c, "verify: NOTE — FP4 runs on the weight-only Marlin fallback this vLLM chose; "
+                   "a throughput limit, not a correctness one")
+        if e and "enable_prefix_caching" in facts:
+            want = e.get("PREFIX_CACHING", "1") != "0"
+            if (facts["enable_prefix_caching"] == "True") != want:
+                problems.append(f"engine enable_prefix_caching={facts['enable_prefix_caching']} but "
+                                f"serve.env wants {want} (vLLM does not auto-enable APC for "
+                                "hybrid-Mamba — check the flag)")
 
     model = e["SERVED_NAME"] if e else served[0]
     payload = json.dumps({
@@ -316,6 +413,49 @@ def cmd_provision(c, a) -> int:
             _, ver, _ = _run("modinfo nvidia 2>/dev/null | sed -n 's/^version: *\\([0-9]*\\).*/\\1/p'")
             fixes.append(f"sudo apt-get install -y nvidia-driver-{ver or '<major>'}-server-open && sudo reboot")
 
+    # Userspace upgraded under the loaded module: a running serve keeps working on the old
+    # module, so nothing looks wrong until the next restart — which then cannot claim the GPU.
+    manual = []
+    _, proc, _ = _run("cat /proc/driver/nvidia/version 2>/dev/null")
+    _, libs, _ = _run("ls -1 /usr/lib/*/libnvidia-ml.so.*.* /usr/lib64/libnvidia-ml.so.*.* 2>/dev/null")
+    drift = driver_drift(module_version(proc), libs.splitlines())
+    checks.append(("loaded module matches driver", drift is None, drift or ""))
+    if drift:
+        holders = [x["name"] for x in running_containers() if x["gpu"]]
+        manual.append(f"stop everything holding the GPU ({', '.join(holders) or 'check `lsof /dev/nvidia*`'}), "
+                      "then: sudo rmmod nvidia_uvm nvidia_drm nvidia_modeset nvidia && "
+                      "sudo modprobe nvidia && sudo modprobe nvidia_uvm   (or: sudo reboot) — "
+                      "then re-run provision: the CDI spec needs regenerating after the swap")
+
+    # CDI spec = snapshot of library names at generation time; stale after a driver upgrade.
+    rc, specs, _ = _run("ls -1 /etc/cdi/*.yaml /var/run/cdi/*.yaml 2>/dev/null")
+    for spec in dict.fromkeys(os.path.realpath(s) for s in specs.splitlines()):
+        try:
+            with open(spec) as fh:
+                missing = stale_cdi_paths(fh.read())
+        except OSError:
+            continue
+        checks.append((f"CDI spec current ({spec})", not missing,
+                       f"{len(missing)} mount source(s) gone, e.g. {missing[0]}" if missing else ""))
+        if any(p.startswith("/run/nvidia-persistenced") for p in missing):
+            fixes.append("sudo systemctl start nvidia-persistenced")
+        if any(not p.startswith("/run/nvidia-persistenced") for p in missing):
+            fixes.append(f"sudo nvidia-ctk cdi generate --output={spec}")
+
+    # Pin the driver like everything else: unattended-upgrades bumping it under a live serve is
+    # exactly how the drift above happens.
+    rc, pkgs, _ = _run("dpkg-query -W -f='${db:Status-Abbrev} ${Package}\\n' "
+                       "'nvidia-*' 'libnvidia-*' 'xserver-xorg-video-nvidia-*' 2>/dev/null "
+                       "| awk '$1==\"ii\"{print $2}'")
+    driver_pkgs = [p for p in pkgs.split() if "container" not in p]   # the toolkit moves separately
+    if driver_pkgs:
+        _, held, _ = _run("apt-mark showhold 2>/dev/null")
+        unheld = sorted(set(driver_pkgs) - set(held.split()))
+        checks.append(("driver packages held", not unheld,
+                       f"{len(unheld)} can be upgraded silently" if unheld else ""))
+        if unheld:
+            fixes.append("sudo apt-mark hold " + " ".join(unheld))
+
     rc, _, _ = _run("command -v docker")
     checks.append(("docker present", rc == 0, "" if rc == 0 else "not installed"))
     if rc != 0:
@@ -331,10 +471,15 @@ def cmd_provision(c, a) -> int:
     width = max(len(n) for n, _, _ in checks)
     for name, ok, note in checks:
         print(f"  {'OK ' if ok else 'FAIL'} {name:<{width}}  {note}")
-    if not fixes:
+    if not fixes and not manual:
         print("provision: box looks ready — try `gwctl serve <label>`")
         return 0
-    print("\nfix steps" + (" (running with --apply):" if a.apply else " (re-run with --apply to execute):"))
+    if manual:
+        print("\nmanual steps (disruptive — --apply will not run these for you):")
+        for m in manual:
+            print(f"  $ {m}")
+    if fixes:
+        print("\nfix steps" + (" (running with --apply):" if a.apply else " (re-run with --apply to execute):"))
     for f in fixes:
         print(f"  $ {f}")
         if a.apply:
@@ -342,4 +487,4 @@ def cmd_provision(c, a) -> int:
             if rc != 0:
                 print(f"provision: step failed rc={rc} — stopping here")
                 return rc
-    return 0 if a.apply else 1
+    return 0 if (a.apply and not manual) else 1
