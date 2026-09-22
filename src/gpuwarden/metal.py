@@ -226,6 +226,12 @@ def container_crashed(state: str):
     return None
 
 
+def rollback_plan(own: str, replaced: list) -> list:
+    """What a failed serve must undo: stop its own container (restart: unless-stopped would
+    otherwise loop it forever) and start again every serve that --replace stopped for it."""
+    return [["docker", "stop", own]] + [["docker", "start", r] for r in replaced]
+
+
 def engine_facts(log: str) -> dict:
     """What the engine actually chose, from its startup log — the flags on the command line
     are intent; these lines are the outcome (dtype, block size, kernel fallbacks)."""
@@ -287,6 +293,24 @@ def running_containers() -> list:
     return out
 
 
+def _rollback(c, own: str, replaced: list, base_port: str = "8000") -> int:
+    """Undo a failed serve and report whether what it replaced is serving again."""
+    from .cli import log
+    for cmd in rollback_plan(own, replaced):
+        rc = subprocess.run(cmd, capture_output=True, text=True).returncode
+        log(c, f"serve: rollback: {' '.join(cmd[1:])} -> rc={rc}")
+    if replaced:
+        base = f"http://127.0.0.1:{base_port}"
+        for _ in range(60):                    # 10 min: a restarted serve re-warms its engine
+            if _get(base + "/health")[0] == 200:
+                log(c, f"serve: rollback: {replaced} healthy again at {base}")
+                break
+            time.sleep(10)
+        else:
+            log(c, f"serve: rollback: {replaced} started but NOT healthy after 10 min — CHECK NOW")
+    return 1
+
+
 def cmd_serve(c, a) -> int:
     from .cli import log
     e = read_serve_env(c, a.label)
@@ -297,9 +321,11 @@ def cmd_serve(c, a) -> int:
         log(c, f"serve: REFUSING — the GPU already runs {rivals}; one card = one serve. "
                "Re-run with --replace to stop them first.")
         return 1
+    replaced = []
     for r in rivals:
-        log(c, f"serve: --replace: stopping {r} (bring it back later with `docker start {r}`)")
-        subprocess.run(["docker", "stop", r], capture_output=True, text=True)
+        log(c, f"serve: --replace: stopping {r} (restored automatically if {own} fails to come up)")
+        if subprocess.run(["docker", "stop", r], capture_output=True, text=True).returncode == 0:
+            replaced.append(r)
     compose = e["_path"].with_name("compose.yaml")
     compose.write_text(render_compose(e))
     log(c, f"serve: {a.label} — compose rendered, starting (cold start = pull + weights + compile)")
@@ -310,7 +336,7 @@ def cmd_serve(c, a) -> int:
                        env={**os.environ, "VLLM_API_KEY": key}, capture_output=True, text=True)
     if r.returncode != 0:
         log(c, f"serve: docker compose FAILED rc={r.returncode}\n{(r.stderr or '').strip()[-600:]}")
-        return 1
+        return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"))
     base = f"http://127.0.0.1:{e.get('PORT', '8000')}"
     for i in range(360):                       # 360 x 10s = 60 min ceiling
         code, _ = _get(base + "/health")
@@ -324,11 +350,11 @@ def cmd_serve(c, a) -> int:
                                   capture_output=True, text=True)
             log(c, f"serve: FAILED — {why}; last log lines:\n"
                    f"{((tail.stdout or '') + (tail.stderr or '')).strip()[-2500:]}")
-            return 1
+            return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"))
         time.sleep(10)
     else:
         log(c, f"serve: NOT healthy after 60 min — docker logs gw-{a.label}")
-        return 1
+        return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"))
     log(c, f"serve: healthy at {base}")
     return _verify(c, e, base, key, container=own)
 

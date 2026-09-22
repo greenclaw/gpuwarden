@@ -6,6 +6,7 @@ from gpuwarden.metal import (
     driver_drift,
     engine_facts,
     module_version,
+    rollback_plan,
     serve_claimants,
     stale_cdi_paths,
 )
@@ -112,3 +113,13 @@ def test_crash_detected_when_restart_policy_loops_it():
 def test_healthy_start_is_not_a_crash():
     assert container_crashed("running 0") is None
     assert container_crashed("") is None          # inspect raced the create — keep waiting
+
+
+def test_rollback_stops_the_failed_serve_and_restarts_what_it_replaced():
+    # a failed --replace must not leave the card empty: the new serve goes, the old ones come back
+    assert rollback_plan("gw-new", ["vllm-prod"]) == [
+        ["docker", "stop", "gw-new"], ["docker", "start", "vllm-prod"]]
+
+
+def test_rollback_without_replace_still_ends_the_restart_loop():
+    assert rollback_plan("gw-new", []) == [["docker", "stop", "gw-new"]]
