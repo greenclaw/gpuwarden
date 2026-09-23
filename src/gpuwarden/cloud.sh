@@ -95,9 +95,25 @@ except Exception: print("")' || true)
       [ "$code" = "200" ] && {
         if [ -n "${WARMUP_CMD:-}" ]; then
           echo "[cloud] HEALTHY — running warmup hook..."
-          BASE_URL="$BASE/v1" SERVED_MODEL="$SERVED_NAME" LABEL="$LABEL" \
-            VLLM_API_KEY="$VLLM_POD_KEY" bash -c "$WARMUP_CMD" \
-            || echo "[cloud] WARNING: warmup hook failed — first request will carry the cold-start spike"
+          # The hook points consumers at the pod: retry it; GW_WARMUP_STRICT=1 tears the pod down after 3 failures.
+          warm_ok=0
+          for _try in 1 2 3; do
+            if BASE_URL="$BASE/v1" SERVED_MODEL="$SERVED_NAME" LABEL="$LABEL" \
+                 VLLM_API_KEY="$VLLM_POD_KEY" bash -c "$WARMUP_CMD"; then
+              warm_ok=1; break
+            fi
+            echo "[cloud] warmup hook failed (attempt $_try/3)" >&2
+            [ "$_try" -lt 3 ] && sleep 20
+          done
+          if [ "$warm_ok" -ne 1 ]; then
+            if [ "${GW_WARMUP_STRICT:-0}" = "1" ]; then
+              echo "[cloud] FATAL: warmup hook failed 3/3 and GW_WARMUP_STRICT=1 — tearing the pod down." >&2
+              if runpodctl pod delete "$PID"; then echo "[cloud] terminated $PID" >&2
+              else echo "[cloud] URGENT: FAILED to terminate $PID — it is STILL BILLING, run: cloud.sh down $PID" >&2; fi
+              exit 3
+            fi
+            echo "[cloud] WARNING: warmup hook failed — first request will carry the cold-start spike"
+          fi
         else
           echo "[cloud] HEALTHY (no WARMUP_CMD set — the first request will be slow)"
         fi
@@ -106,8 +122,15 @@ except Exception: print("")' || true)
       }
       sleep 20
     done
-    echo "[cloud] health timeout after ~40min — THE POD IS STILL RUNNING AND BILLING." >&2
-    echo "[cloud] terminate it with: cloud.sh down $PID" >&2
+    echo "[cloud] health timeout after ~40min — pod $PID never became healthy." >&2
+    if [ "${GW_ON_HEALTH_TIMEOUT:-keep}" = "terminate" ]; then
+      echo "[cloud] GW_ON_HEALTH_TIMEOUT=terminate — tearing the pod down instead of leaving it billing." >&2
+      if runpodctl pod delete "$PID"; then echo "[cloud] terminated $PID" >&2
+      else echo "[cloud] URGENT: FAILED to terminate $PID — it is STILL BILLING, run: cloud.sh down $PID" >&2; fi
+    else
+      echo "[cloud] THE POD IS STILL RUNNING AND BILLING." >&2
+      echo "[cloud] terminate it with: cloud.sh down $PID" >&2
+    fi
     exit 2
     ;;
   status)

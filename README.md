@@ -97,6 +97,10 @@ checkout, so the tool and your model configs update independently.
 | `WARMUP_CMD` | optional hook after health; absorbs the cold-start spike |
 | `TZ` | timezone the schedule is written in |
 
+Two environment switches make `up` fail closed instead of leaving a pod billing: `GW_ON_HEALTH_TIMEOUT=terminate`
+tears the pod down when it never becomes healthy, and `GW_WARMUP_STRICT=1` tears it down when `WARMUP_CMD` fails
+three times (the hook retries either way). Unset, both keep the pod and warn.
+
 ## Run it in a container
 
 Cron lives **inside the image**, so the host gains no system daemon and no packages — useful when the
