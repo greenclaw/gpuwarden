@@ -2,7 +2,7 @@
 
 Each case is a state a real box was caught in; the parsers must name it, not guess."""
 from gpuwarden.metal import (
-    adopt_rename,
+    aside_action,
     compose_project,
     container_crashed,
     container_name,
@@ -156,16 +156,6 @@ def test_compose_project_is_the_normalised_label_directory():
     assert compose_project("Qwen36-35B.ccappai") == "qwen36-35bccappai"
 
 
-def test_same_name_from_another_compose_project_is_renamed_out_of_the_way():
-    # /opt/vllm made "vllm-prod"; gwctl's project must take the name but keep the old one restorable
-    assert adopt_rename("vllm-prod", "vllm", "mylabel", "20260923T1200") == "vllm-prod-replaced-20260923T1200"
-
-
-def test_our_own_container_or_no_container_needs_no_rename():
-    assert adopt_rename("vllm-prod", "mylabel", "mylabel", "t") is None
-    assert adopt_rename("vllm-prod", None, "mylabel", "t") is None
-
-
 def test_rollback_gives_an_adopted_container_its_name_back():
     plan = rollback_plan("vllm-prod", ["vllm-prod-replaced-t"], {"vllm-prod-replaced-t": "vllm-prod"})
     assert plan == [["docker", "stop", "vllm-prod"], ["docker", "rm", "vllm-prod"],
@@ -179,3 +169,15 @@ def test_rollback_renames_back_an_adopted_container_that_was_not_running():
     assert plan == [["docker", "stop", "vllm-prod"], ["docker", "rm", "vllm-prod"],
                     ["docker", "rename", "vllm-prod-replaced-t", "vllm-prod"],
                     ["docker", "start", "gw-other"]]
+
+
+def test_replace_moves_our_own_container_aside_so_an_upgrade_can_roll_back():
+    # an image bump recreates the container in place — the old one would be gone for a rollback
+    assert aside_action(exists_project="lbl", project="lbl", replace=True) == "aside"
+    assert aside_action(exists_project="vllm", project="lbl", replace=True) == "aside"
+
+
+def test_plain_serve_stays_idempotent_and_refuses_foreign_names():
+    assert aside_action(exists_project="lbl", project="lbl", replace=False) == "inplace"
+    assert aside_action(exists_project="vllm", project="lbl", replace=False) == "refuse"
+    assert aside_action(exists_project=None, project="lbl", replace=True) == "fresh"

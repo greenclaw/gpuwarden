@@ -237,12 +237,18 @@ def compose_project(label: str) -> str:
     return re.sub(r"[^a-z0-9_-]", "", label.lower())
 
 
-def adopt_rename(own: str, existing_project, our_project: str, stamp: str):
-    """A container already holding our name but created by ANOTHER compose project (a hand-made
-    /opt/... compose) blocks `compose up`. Rename it out of the way — it stays restorable."""
-    if not existing_project or existing_project == our_project:
-        return None
-    return f"{own}-replaced-{stamp}"
+def aside_action(exists_project, project: str, replace: bool) -> str:
+    """What serve does with a container that already holds our name:
+      fresh   — nothing there
+      inplace — ours, plain serve: compose decides (idempotent; recreates only on a config change)
+      refuse  — another project's container and no --replace
+      aside   — --replace: rename it out of the way (stopped), start ours fresh. The old one stays
+                restorable, so even an in-place upgrade (new image, same label) can roll back."""
+    if exists_project is None:
+        return "fresh"
+    if replace:
+        return "aside"
+    return "inplace" if exists_project == project else "refuse"
 
 
 def rollback_plan(own: str, replaced: list, renamed=None) -> list:
@@ -365,15 +371,16 @@ def cmd_serve(c, a) -> int:
                          '{{index .Config.Labels "com.docker.compose.project"}}', own],
                         capture_output=True, text=True)
     theirs = st.stdout.strip() if st.returncode == 0 else None
-    if theirs is not None and theirs != project:
-        if not getattr(a, "replace", False):
-            log(c, f"serve: REFUSING — '{own}' exists but belongs to compose project '{theirs or '?'}'; "
-                   "re-run with --replace to take it over (it is renamed, not deleted)")
-            return 1
-        new = adopt_rename(own, theirs or "(none)", project, time.strftime("%Y%m%dT%H%M%S"))
+    action = aside_action(theirs, project, getattr(a, "replace", False))
+    if action == "refuse":
+        log(c, f"serve: REFUSING — '{own}' exists but belongs to compose project '{theirs or '?'}'; "
+               "re-run with --replace to take it over (it is renamed, not deleted)")
+        return 1
+    if action == "aside":
+        new = f"{own}-replaced-{time.strftime('%Y%m%dT%H%M%S')}"
         subprocess.run(["docker", "rename", own, new], capture_output=True, text=True)
         renamed[new] = own
-        log(c, f"serve: adopting the name '{own}': existing container renamed to '{new}'")
+        log(c, f"serve: '{own}' moved aside as '{new}' (restored if the new serve fails, removed if it passes)")
     rivals = serve_claimants(running_containers(), own=own)
     if rivals and not getattr(a, "replace", False):
         log(c, f"serve: REFUSING — the GPU already runs {rivals}; one card = one serve. "
@@ -414,7 +421,14 @@ def cmd_serve(c, a) -> int:
         log(c, f"serve: NOT healthy after 60 min — docker logs {own}")
         return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"), renamed=renamed)
     log(c, f"serve: healthy at {base}")
-    return _verify(c, e, base, key, container=own)
+    rc = _verify(c, e, base, key, container=own)
+    if rc != 0 and (replaced or renamed):
+        log(c, "serve: verify FAILED on the new serve — rolling back to what it replaced")
+        return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"), renamed=renamed)
+    for old_name in renamed:                   # passed: the moved-aside container is history now
+        subprocess.run(["docker", "rm", "-f", old_name], capture_output=True, text=True)
+        log(c, f"serve: removed '{old_name}' (superseded)")
+    return rc
 
 
 def cmd_verify(c, a) -> int:
