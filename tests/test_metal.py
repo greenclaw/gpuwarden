@@ -2,7 +2,10 @@
 
 Each case is a state a real box was caught in; the parsers must name it, not guess."""
 from gpuwarden.metal import (
+    adopt_rename,
+    compose_project,
     container_crashed,
+    container_name,
     driver_drift,
     driver_packages,
     engine_facts,
@@ -141,3 +144,30 @@ rc |nvidia-dkms-595-server
 def test_driver_packages_counts_held_ones_as_installed():
     # a held package reports 'hi'; dropping it made the check vanish right after --apply held it
     assert driver_packages(DPKG) == ["libnvidia-compute-595-server", "nvidia-driver-595-server-open"]
+
+
+def test_container_name_defaults_to_gw_label_and_honours_override():
+    assert container_name({"_label": "m"}) == "gw-m"
+    # an existing serve keeps its name when it moves under gwctl (log labels, dashboards)
+    assert container_name({"_label": "m", "CONTAINER_NAME": "vllm-prod"}) == "vllm-prod"
+
+
+def test_compose_project_is_the_normalised_label_directory():
+    assert compose_project("Qwen36-35B.ccappai") == "qwen36-35bccappai"
+
+
+def test_same_name_from_another_compose_project_is_renamed_out_of_the_way():
+    # /opt/vllm made "vllm-prod"; gwctl's project must take the name but keep the old one restorable
+    assert adopt_rename("vllm-prod", "vllm", "mylabel", "20260923T1200") == "vllm-prod-replaced-20260923T1200"
+
+
+def test_our_own_container_or_no_container_needs_no_rename():
+    assert adopt_rename("vllm-prod", "mylabel", "mylabel", "t") is None
+    assert adopt_rename("vllm-prod", None, "mylabel", "t") is None
+
+
+def test_rollback_gives_an_adopted_container_its_name_back():
+    plan = rollback_plan("vllm-prod", ["vllm-prod-replaced-t"], {"vllm-prod-replaced-t": "vllm-prod"})
+    assert plan == [["docker", "stop", "vllm-prod"], ["docker", "rm", "vllm-prod"],
+                    ["docker", "rename", "vllm-prod-replaced-t", "vllm-prod"],
+                    ["docker", "start", "vllm-prod"]]

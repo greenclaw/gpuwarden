@@ -87,7 +87,7 @@ def render_compose(e: dict) -> str:
 services:
   vllm:
     image: {e['IMAGE']}
-    container_name: gw-{e['_label']}
+    container_name: {container_name(e)}
     restart: unless-stopped
     network_mode: host
     ipc: host
@@ -226,10 +226,39 @@ def container_crashed(state: str):
     return None
 
 
-def rollback_plan(own: str, replaced: list) -> list:
+def container_name(e: dict) -> str:
+    """gw-<label>, unless serve.env pins CONTAINER_NAME — how an existing serve moves under gwctl
+    without renaming what logs, dashboards and runbooks already know it as."""
+    return e.get("CONTAINER_NAME") or f"gw-{e['_label']}"
+
+
+def compose_project(label: str) -> str:
+    """The compose project gwctl uses for a label (docker's own normalisation, made explicit)."""
+    return re.sub(r"[^a-z0-9_-]", "", label.lower())
+
+
+def adopt_rename(own: str, existing_project, our_project: str, stamp: str):
+    """A container already holding our name but created by ANOTHER compose project (a hand-made
+    /opt/... compose) blocks `compose up`. Rename it out of the way — it stays restorable."""
+    if not existing_project or existing_project == our_project:
+        return None
+    return f"{own}-replaced-{stamp}"
+
+
+def rollback_plan(own: str, replaced: list, renamed=None) -> list:
     """What a failed serve must undo: stop its own container (restart: unless-stopped would
-    otherwise loop it forever) and start again every serve that --replace stopped for it."""
-    return [["docker", "stop", own]] + [["docker", "start", r] for r in replaced]
+    otherwise loop it forever) and start again every serve that --replace stopped for it. An
+    adopted container gets its original name back — which first means freeing that name."""
+    renamed = renamed or {}
+    plan = [["docker", "stop", own]]
+    if renamed:
+        plan.append(["docker", "rm", own])
+    for r in replaced:
+        if r in renamed:
+            plan += [["docker", "rename", r, renamed[r]], ["docker", "start", renamed[r]]]
+        else:
+            plan.append(["docker", "start", r])
+    return plan
 
 
 def driver_packages(dpkg_out: str) -> list:
@@ -309,17 +338,17 @@ def running_containers() -> list:
     return out
 
 
-def _rollback(c, own: str, replaced: list, base_port: str = "8000") -> int:
+def _rollback(c, own: str, replaced: list, base_port: str = "8000", renamed=None) -> int:
     """Undo a failed serve and report whether what it replaced is serving again."""
     from .cli import log
-    for cmd in rollback_plan(own, replaced):
+    for cmd in rollback_plan(own, replaced, renamed):
         rc = subprocess.run(cmd, capture_output=True, text=True).returncode
         log(c, f"serve: rollback: {' '.join(cmd[1:])} -> rc={rc}")
     if replaced:
         base = f"http://127.0.0.1:{base_port}"
         for _ in range(60):                    # 10 min: a restarted serve re-warms its engine
             if _get(base + "/health")[0] == 200:
-                log(c, f"serve: rollback: {replaced} healthy again at {base}")
+                log(c, f"serve: rollback: {[(renamed or {}).get(r, r) for r in replaced]} healthy again at {base}")
                 break
             time.sleep(10)
         else:
@@ -331,7 +360,21 @@ def cmd_serve(c, a) -> int:
     from .cli import log
     e = read_serve_env(c, a.label)
     key = _vllm_key(c)
-    own = f"gw-{a.label}"
+    own, project = container_name(e), compose_project(a.label)
+    renamed = {}
+    st = subprocess.run(["docker", "inspect", "-f",
+                         '{{index .Config.Labels "com.docker.compose.project"}}', own],
+                        capture_output=True, text=True)
+    theirs = st.stdout.strip() if st.returncode == 0 else None
+    if theirs is not None and theirs != project:
+        if not getattr(a, "replace", False):
+            log(c, f"serve: REFUSING — '{own}' exists but belongs to compose project '{theirs or '?'}'; "
+                   "re-run with --replace to take it over (it is renamed, not deleted)")
+            return 1
+        new = adopt_rename(own, theirs or "(none)", project, time.strftime("%Y%m%dT%H%M%S"))
+        subprocess.run(["docker", "rename", own, new], capture_output=True, text=True)
+        renamed[new] = own
+        log(c, f"serve: adopting the name '{own}': existing container renamed to '{new}'")
     rivals = serve_claimants(running_containers(), own=own)
     if rivals and not getattr(a, "replace", False):
         log(c, f"serve: REFUSING — the GPU already runs {rivals}; one card = one serve. "
@@ -345,14 +388,14 @@ def cmd_serve(c, a) -> int:
     compose = e["_path"].with_name("compose.yaml")
     compose.write_text(render_compose(e))
     log(c, f"serve: {a.label} — compose rendered, starting (cold start = pull + weights + compile)")
-    up = ["docker", "compose", "-f", str(compose), "up", "-d"]
+    up = ["docker", "compose", "-f", str(compose), "-p", project, "up", "-d"]
     if getattr(a, "recreate", False):          # fresh engine = empty prefix cache, same config
         up.append("--force-recreate")
     r = subprocess.run(up,
                        env={**os.environ, "VLLM_API_KEY": key}, capture_output=True, text=True)
     if r.returncode != 0:
         log(c, f"serve: docker compose FAILED rc={r.returncode}\n{(r.stderr or '').strip()[-600:]}")
-        return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"))
+        return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"), renamed=renamed)
     base = f"http://127.0.0.1:{e.get('PORT', '8000')}"
     for i in range(360):                       # 360 x 10s = 60 min ceiling
         code, _ = _get(base + "/health")
@@ -366,11 +409,11 @@ def cmd_serve(c, a) -> int:
                                   capture_output=True, text=True)
             log(c, f"serve: FAILED — {why}; last log lines:\n"
                    f"{((tail.stdout or '') + (tail.stderr or '')).strip()[-2500:]}")
-            return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"))
+            return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"), renamed=renamed)
         time.sleep(10)
     else:
-        log(c, f"serve: NOT healthy after 60 min — docker logs gw-{a.label}")
-        return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"))
+        log(c, f"serve: NOT healthy after 60 min — docker logs {own}")
+        return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"), renamed=renamed)
     log(c, f"serve: healthy at {base}")
     return _verify(c, e, base, key, container=own)
 
@@ -383,7 +426,7 @@ def cmd_verify(c, a) -> int:
         sys.exit("verify: give a <label> or --url")
     e = read_serve_env(c, a.label)
     return _verify(c, e, f"http://127.0.0.1:{e.get('PORT', '8000')}", _vllm_key(c),
-                   container=container or f"gw-{a.label}")
+                   container=container or container_name(e))
 
 
 def _verify(c, e, base: str, key: str, container=None) -> int:
