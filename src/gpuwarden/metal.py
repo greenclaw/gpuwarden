@@ -253,11 +253,10 @@ def rollback_plan(own: str, replaced: list, renamed=None) -> list:
     plan = [["docker", "stop", own]]
     if renamed:
         plan.append(["docker", "rm", own])
-    for r in replaced:
-        if r in renamed:
-            plan += [["docker", "rename", r, renamed[r]], ["docker", "start", renamed[r]]]
-        else:
-            plan.append(["docker", "start", r])
+    for tmp, orig in renamed.items():          # every adopted name goes back, running or not
+        plan.append(["docker", "rename", tmp, orig])
+    for r in replaced:                          # only what was serving gets started again
+        plan.append(["docker", "start", renamed.get(r, r)])
     return plan
 
 

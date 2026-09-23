@@ -171,3 +171,11 @@ def test_rollback_gives_an_adopted_container_its_name_back():
     assert plan == [["docker", "stop", "vllm-prod"], ["docker", "rm", "vllm-prod"],
                     ["docker", "rename", "vllm-prod-replaced-t", "vllm-prod"],
                     ["docker", "start", "vllm-prod"]]
+
+
+def test_rollback_renames_back_an_adopted_container_that_was_not_running():
+    # the adopted container was stopped: it gets its name back but is not started
+    plan = rollback_plan("vllm-prod", ["gw-other"], {"vllm-prod-replaced-t": "vllm-prod"})
+    assert plan == [["docker", "stop", "vllm-prod"], ["docker", "rm", "vllm-prod"],
+                    ["docker", "rename", "vllm-prod-replaced-t", "vllm-prod"],
+                    ["docker", "start", "gw-other"]]
