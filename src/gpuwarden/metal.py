@@ -232,6 +232,20 @@ def rollback_plan(own: str, replaced: list) -> list:
     return [["docker", "stop", own]] + [["docker", "start", r] for r in replaced]
 
 
+def driver_packages(dpkg_out: str) -> list:
+    """Installed NVIDIA driver packages from `dpkg-query -W -f='${db:Status-Abbrev}|${Package}'`.
+    Installed = second status letter 'i', whatever the wanted state: a HELD package reports 'hi',
+    and filtering on 'ii' made the hold check vanish right after --apply had held everything.
+    The container toolkit moves on its own schedule and is not pinned with the driver."""
+    out = []
+    for ln in dpkg_out.splitlines():
+        abbrev, _, pkg = ln.partition("|")
+        abbrev, pkg = abbrev.strip(), pkg.strip()
+        if len(abbrev) >= 2 and abbrev[1] == "i" and pkg and "container" not in pkg:
+            out.append(pkg)
+    return out
+
+
 def engine_facts(log: str) -> dict:
     """What the engine actually chose, from its startup log — the flags on the command line
     are intent; these lines are the outcome (dtype, block size, kernel fallbacks)."""
@@ -494,10 +508,9 @@ def cmd_provision(c, a) -> int:
 
     # Pin the driver like everything else: unattended-upgrades bumping it under a live serve is
     # exactly how the drift above happens.
-    rc, pkgs, _ = _run("dpkg-query -W -f='${db:Status-Abbrev} ${Package}\\n' "
-                       "'nvidia-*' 'libnvidia-*' 'xserver-xorg-video-nvidia-*' 2>/dev/null "
-                       "| awk '$1==\"ii\"{print $2}'")
-    driver_pkgs = [p for p in pkgs.split() if "container" not in p]   # the toolkit moves separately
+    rc, pkgs, _ = _run("dpkg-query -W -f='${db:Status-Abbrev}|${Package}\\n' "
+                       "'nvidia-*' 'libnvidia-*' 'xserver-xorg-video-nvidia-*' 2>/dev/null")
+    driver_pkgs = driver_packages(pkgs)
     if driver_pkgs:
         _, held, _ = _run("apt-mark showhold 2>/dev/null")
         unheld = sorted(set(driver_pkgs) - set(held.split()))

@@ -4,6 +4,7 @@ Each case is a state a real box was caught in; the parsers must name it, not gue
 from gpuwarden.metal import (
     container_crashed,
     driver_drift,
+    driver_packages,
     engine_facts,
     module_version,
     rollback_plan,
@@ -123,3 +124,16 @@ def test_rollback_stops_the_failed_serve_and_restarts_what_it_replaced():
 
 def test_rollback_without_replace_still_ends_the_restart_loop():
     assert rollback_plan("gw-new", []) == [["docker", "stop", "gw-new"]]
+
+
+DPKG = """ii |libnvidia-compute-595-server
+hi |nvidia-driver-595-server-open
+un |nvidia-driver-595-server
+ii |nvidia-container-toolkit
+rc |nvidia-dkms-595-server
+"""
+
+
+def test_driver_packages_counts_held_ones_as_installed():
+    # a held package reports 'hi'; dropping it made the check vanish right after --apply held it
+    assert driver_packages(DPKG) == ["libnvidia-compute-595-server", "nvidia-driver-595-server-open"]
