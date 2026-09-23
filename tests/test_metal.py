@@ -79,6 +79,8 @@ LOG = """
 (EngineCore pid=230) INFO [nvfp4.py:270] Using 'MARLIN' NvFp4 MoE backend out of potential backends: ['FLASHINFER_TRTLLM', 'MARLIN'].
 (EngineCore pid=230) WARNING [marlin.py:34] Your GPU does not have native support for FP4 computation but FP4 quantization is being used. Weight-only FP4 compression will be used leveraging the Marlin kernel.
 (EngineCore pid=230) INFO [interface.py:773] Setting attention block size to 1056 tokens to ensure that attention page size is >= mamba page size.
+(EngineCore pid=230) INFO [gpu_model_runner.py:5255] Model loading took 20.4 GiB memory and 12.157034 seconds
+(EngineCore pid=230) INFO [gpu_worker.py:508] Available KV cache memory: 64.16 GiB
 (EngineCore pid=230) INFO [kv_cache_utils.py:2146] GPU KV cache size: 3,274,229 tokens
 (EngineCore pid=230) INFO [kv_cache_utils.py:2147] Maximum concurrency for 262,144 tokens per request: 12.49x
 """
@@ -94,6 +96,8 @@ def test_engine_facts_from_startup_log():
     assert f["mamba_cache_mode"] == "align"
     assert f["nvfp4_moe_backend"] == "MARLIN"
     assert f["fp4_native"] is False       # the fallback vLLM itself warns about
+    assert f["weights_gib"] == 20.4       # what a vision-encoder-off start would shrink
+    assert f["kv_cache_gib"] == 64.16
 
 
 def test_engine_facts_empty_log_gives_empty_facts():

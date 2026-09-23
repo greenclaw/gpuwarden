@@ -258,6 +258,8 @@ def engine_facts(log: str) -> dict:
         "mamba_cache_mode": (r"Mamba cache mode is set to '(\w+)'", str),
         "nvfp4_moe_backend": (r"Using '(\w+)' NvFp4 MoE backend", str),
         "enable_prefix_caching": (r"enable_prefix_caching=(\w+)", str),
+        "weights_gib": (r"Model loading took ([\d.]+) GiB", float),
+        "kv_cache_gib": (r"Available KV cache memory: ([\d.]+) GiB", float),
     }
     for key, (pat, conv) in pats.items():
         hits = re.findall(pat, log)
