@@ -330,7 +330,7 @@ def main() -> int:
     s.add_argument("label", nargs="?")
     s.add_argument("--url")
     s.add_argument("--container", help="read engine facts from this container "
-                                       "(default gw-<label>; use for serves not started by gwctl)")
+                                       "(default: the label's container, CONTAINER_NAME or gw-<label>)")
     a = p.parse_args()
     c = load_conf()
     return {"view": cmd_view, "set": cmd_set, "install": cmd_install, "uninstall": cmd_uninstall,

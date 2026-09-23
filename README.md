@@ -133,6 +133,33 @@ and runs a real tool-calling request end to end. `provision` knows the Blackwell
 proprietary kernel module binds to a GB2xx card but cannot initialize it — `nvidia-smi` reports
 "No devices were found" while everything else looks healthy; the fix is the `-open` driver.
 
+`provision` also catches the failure that bites a box left alone for weeks: unattended upgrades replace
+the driver's userspace under a running serve, nothing breaks until the next container restart, and then
+it breaks three ways at once (NVML version mismatch, a CDI spec pointing at deleted libraries, a stopped
+`nvidia-persistenced`). It reports module/userspace drift and stale CDI paths, and checks that the driver
+packages are held (`--apply` holds them).
+
+### Changing a live serve
+
+```bash
+gwctl serve my-model --replace     # take the GPU from whatever serves on it now
+gwctl serve my-model --recreate    # same config, fresh engine (empty prefix cache)
+```
+
+`--replace` is built for production changes (an image bump, a flag, taking over a hand-made
+container):
+
+- a container that already holds the target name is **moved aside** (`<name>-replaced-<stamp>`), not
+  deleted; other serves on the card are stopped;
+- the new serve must come up **and** pass `verify`; an engine that dies at startup fails in seconds,
+  not after the health timeout;
+- on failure the new container is removed, the moved-aside one gets its name back, and whatever was
+  serving is started again; on success the moved-aside container is removed.
+
+Set `CONTAINER_NAME` in `serve.env` to keep an existing container's name (log shippers and dashboards
+often key on it); otherwise gwctl names it `gw-<label>`. An upgrade is then a one-line diff to `IMAGE`
+plus `gwctl serve <label> --replace`, and the rollback is the same command after reverting the line.
+
 ## Remote control
 
 The scheduler should live on a machine that is always on; a laptop that sleeps will miss its own
@@ -153,6 +180,10 @@ export GPUWARDEN_HOST=my-server
 | `gwctl install` / `uninstall` | manage a marker-delimited crontab block (foreign lines preserved) |
 | `gwctl up` | create a pod — idempotent, balance-guarded, fails closed on unknown state |
 | `gwctl down` | terminate everything, then verify; retries; loud failure |
+| `gwctl provision [--apply]` | metal: driver/module drift, stale CDI, driver hold, docker + toolkit |
+| `gwctl serve <label> [--replace] [--recreate]` | metal: render compose, start, wait healthy, verify; rolls back on failure |
+| `gwctl verify <label> [--url …] [--container …]` | health, engine facts from the startup log, tool-calling acceptance |
+| `gwctl render <label> [--target k8s] [--stdout]` | write the compose (or a starting-point Deployment) without running it |
 
 ## Known limitation
 
