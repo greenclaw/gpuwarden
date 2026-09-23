@@ -63,7 +63,7 @@ case "${1:-}" in
     TERM_AT=$(date -u -v+"${HOURS}"H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "+${HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
     echo "[cloud] creating pod: $LABEL on '$GPU' ($CLOUD), auto-terminate $TERM_AT"
     OUT=$(runpodctl pod create --name "gw-$LABEL" --gpu-id "$GPU" --cloud-type "$CLOUD" \
-      --image "${IMAGE:?serve.env must set IMAGE (pin it by digest)}" \
+      --image "${IMAGE:?serve.env must set IMAGE (pin it by digest)}" ${MIN_CUDA:+--min-cuda-version "$MIN_CUDA"} \
       --container-disk-in-gb "${DISK_GB:-80}" \
       --ports "8000/http" --terminate-after "$TERM_AT" \
       --env "{\"VLLM_API_KEY\":\"$VLLM_POD_KEY\"}" --docker-args "$ARGS" 2>&1 | { grep -vF -f "$PATFILE" || true; })
