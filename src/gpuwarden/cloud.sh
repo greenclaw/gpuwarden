@@ -82,7 +82,7 @@ except Exception: print("")' || true)
     if [ -z "$PID" ]; then
       # Distinguish "create failed" from "created but I cannot parse the id" — the latter means a pod
       # may be BILLING with no id recorded anywhere, which must never look like a plain failure.
-      if printf '%s' "$ALL" | grep -qiE '"id"|created|pod .* started'; then
+      if printf '%s' "$ALL" | grep -qiE '"id"|created|create_uncertain|pod .* started'; then
         echo "[cloud] URGENT: pod may have been CREATED but its id could not be parsed." >&2
         echo "[cloud] Check the RunPod console NOW and terminate it manually. Raw output:" >&2
       else
