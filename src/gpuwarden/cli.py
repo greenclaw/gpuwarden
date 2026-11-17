@@ -129,17 +129,6 @@ def status(c: dict):
     return ("none" if "no pods" in raw else "pods", bal, raw)
 
 
-def pod_hours(c: dict) -> int:
-    """Hours for cloud.sh --terminate-after: must OUTLIVE the scheduled window, never cut it short.
-    Spans UP_AT..SWEEP_AT (the last teardown of the day) plus an hour of margin."""
-    uh, um = (int(x) for x in c["UP_AT"].split(":"))
-    sh_, sm = (int(x) for x in c["SWEEP_AT"].split(":"))
-    span = (sh_ * 60 + sm) - (uh * 60 + um)
-    if span <= 0:
-        span += 24 * 60
-    return max(1, -(-span // 60) + 1)
-
-
 def cmd_up(c, _a) -> int:
     state, bal, raw = status(c)
     if state == "unknown":                  # fail closed: never create blind
@@ -151,10 +140,9 @@ def cmd_up(c, _a) -> int:
     if bal is None or bal < float(c["MIN_BALANCE"]):
         log(c, f"up: SKIP — balance ${bal} below MIN_BALANCE ${c['MIN_BALANCE']}")
         return 0
-    hours = pod_hours(c)
-    log(c, f"up: creating pod for {c['MODEL_LABEL']} (balance ${bal:.2f}, --hours {hours})")
+    log(c, f"up: creating pod for {c['MODEL_LABEL']} (balance ${bal:.2f})")
     try:
-        r = cloud(c, "up", c["MODEL_LABEL"], "--hours", str(hours))
+        r = cloud(c, "up", c["MODEL_LABEL"])
     except subprocess.TimeoutExpired as e:
         out = e.output if isinstance(e.output, str) else (e.output or b"").decode("utf-8", "replace")
         log(c, "up: TIMED OUT waiting for cloud.sh — A POD MAY BE LIVE AND BILLING. "
