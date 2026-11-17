@@ -64,11 +64,15 @@ case "${1:-}" in
     # No provider-side auto-terminate any more: RunPod REST v2 has no such field and runpodctl dropped
     # --terminate-after (REST v1 retired 2026-11-15). Teardown rests on `gwctl down` + the late sweep.
     echo "[cloud] creating pod: $LABEL on '$GPU' ($CLOUD)"
-    OUT=$(runpodctl pod create --name "gw-$LABEL" --gpu-id "$GPU" --cloud-type "$CLOUD" \
+    # RAW is the unredacted stdout: parsed for the pod id, NEVER printed. runpodctl v3 prints indented
+    # JSON with the key on its own line of the env array; dropping that line before the parse left a
+    # trailing comma (invalid JSON) and a created, billing pod was reported as unparseable.
+    RAW=$(runpodctl pod create --name "gw-$LABEL" --gpu-id "$GPU" --cloud-type "$CLOUD" \
       --image "${IMAGE:?serve.env must set IMAGE (pin it by digest)}" ${MIN_CUDA:+--min-cuda-version "$MIN_CUDA"} \
       --container-disk-in-gb "${DISK_GB:-80}" \
       --ports "8000/http" \
-      --env "{\"VLLM_API_KEY\":\"$VLLM_POD_KEY\"}" --docker-args "$ARGS" 2>"$ERRF" | { grep -vF -f "$PATFILE" || true; }) || true   # failure is reported below, not by set -e
+      --env "{\"VLLM_API_KEY\":\"$VLLM_POD_KEY\"}" --docker-args "$ARGS" 2>"$ERRF") || true   # failure is reported below, not by set -e
+    OUT=$(printf '%s\n' "$RAW" | grep -vF -f "$PATFILE" || true)   # the redacted copy: the only one printed
     # stderr is kept apart: runpodctl v3 prints notices/warnings there, and mixed into the success JSON
     # they broke the id parse below (a created, billing pod reported as unparseable).
     ALL="$(grep -vF -f "$PATFILE" "$ERRF" || true)"$'\n'"$OUT"
@@ -76,7 +80,7 @@ case "${1:-}" in
     # in runpodctl's argv for the duration of the create call (readable via ps on a shared host).
     # Keep hosts single-tenant; the proper fix is to create pods through the GraphQL API (see gql()).
 
-    PID=$(printf '%s' "$OUT" | python3 -c 'import sys,json
+    PID=$(printf '%s' "$RAW" | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("id",""))
 except Exception: print("")' || true)
     if [ -z "$PID" ]; then

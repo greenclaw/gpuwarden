@@ -96,3 +96,49 @@ def test_uncertain_create_is_urgent_not_a_plain_failure(tmp_path):
     r = subprocess.run(["bash", str(CLOUD), "up", "lbl"], env=env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 1
     assert "URGENT" in r.stderr
+
+
+POD_KEY = "test-endpoint-key-7f3a"
+# runpodctl v3 prints the created pod as indented JSON, one env entry per line, sorted; it injects an
+# ssh PUBLIC_KEY, so the endpoint key line is the LAST array element.
+POD_JSON = """{
+  "containerDiskInGb": 80,
+  "costPerHr": 2.69,
+  "desiredStatus": "RUNNING",
+  "env": [
+    "PUBLIC_KEY=ssh-ed25519 AAAAC3Nza user@host",
+    "VLLM_API_KEY=test-endpoint-key-7f3a"
+  ],
+  "gpuCount": 1,
+  "id": "p1",
+  "name": "gw-x",
+  "ports": "8000/http"
+}"""
+
+
+def up_with_create_output(tmp_path, pod_json, tail=""):
+    fake_bin(tmp_path, "runpodctl", f"cat <<'EOF'\n{pod_json}\nEOF\n{tail}")
+    fake_bin(tmp_path, "curl", "printf 200\n")
+    (tmp_path / "models/lbl").mkdir(parents=True)
+    (tmp_path / "models/lbl/serve.env").write_text(SERVE_ENV)
+    env = dict(os.environ, PATH=f"{tmp_path}/bin:{os.environ['PATH']}", MODELS_DIR=f"{tmp_path}/models",
+               RUNPOD_API_KEY="k", VLLM_POD_KEY=POD_KEY)
+    return subprocess.run(["bash", str(CLOUD), "up", "lbl"], env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_pod_id_is_parsed_from_multiline_create_json(tmp_path):
+    # redacting the key line before the parse left `"PUBLIC_KEY=...",` followed by `]` — a trailing comma,
+    # invalid JSON — so a created, billing pod was reported as "URGENT ... could not be parsed"
+    r = up_with_create_output(tmp_path, POD_JSON)
+    assert r.returncode == 0, r.stderr
+    assert "URGENT" not in r.stderr
+    assert "READY: https://p1-8000.proxy.runpod.net/v1" in r.stdout
+    assert POD_KEY not in r.stdout + r.stderr
+
+
+def test_endpoint_key_is_not_printed_when_create_fails(tmp_path):
+    # the id is parsed from the unredacted output; what gets printed must still be the redacted copy
+    r = up_with_create_output(tmp_path, POD_JSON.replace('  "id": "p1",\n', ""), "exit 1\n")
+    assert r.returncode == 1
+    assert "pod create failed" in r.stderr and "PUBLIC_KEY" in r.stderr
+    assert POD_KEY not in r.stdout + r.stderr
