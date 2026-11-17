@@ -1,0 +1,24 @@
+name: release-please
+
+# Keeps a release PR up to date on every push to main; merging that PR tags and publishes the release.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # release branch, tag, GitHub release
+      pull-requests: write   # the release PR
+      issues: write          # the autorelease labels
+    steps:
+      # manifest mode: release-please-config.json + .release-please-manifest.json
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0

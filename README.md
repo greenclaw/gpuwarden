@@ -189,6 +189,32 @@ export GPUWARDEN_HOST=my-server
 | `gwctl verify <label> [--url …] [--container …]` | health, engine facts from the startup log, tool-calling acceptance |
 | `gwctl render <label> [--target k8s] [--stdout]` | write the compose (or a starting-point Deployment) without running it |
 
+## Releasing
+
+Releases are cut by [release-please](https://github.com/googleapis/release-please). On every push to
+`main` it opens or refreshes a release PR that bumps `version` in `pyproject.toml` (the only place the
+number lives — `gpuwarden.__version__` reads it from the installed package) and writes `CHANGELOG.md`.
+**Merging that PR is the release**: it creates the `vX.Y.Z` tag and the GitHub release. Nothing is
+released until then.
+
+The bump follows the [conventional commit](https://www.conventionalcommits.org/) types since the last tag:
+
+| commit | bump while < 1.0 |
+|---|---|
+| `fix:` | patch |
+| `feat:` | minor |
+| commit with the breaking-change marker | minor (major once past 1.0) |
+| `docs:`, `chore:`, `ci:`, `test:`, `refactor:` … | none — no release PR on their own |
+
+To force a specific version, put a `Release-As:` footer in the body of a commit that lands on `main`:
+
+```sh
+git commit --allow-empty -m "chore: release 1.0.0" -m "Release-As: 1.0.0"
+```
+
+The release PR is opened with the workflow token, so CI does not start on it by itself — close and
+reopen the PR to run the checks before merging.
+
 ## Known limitation
 
 `runpodctl`'s `--env` accepts only a JSON string, so the endpoint key is briefly visible in that
