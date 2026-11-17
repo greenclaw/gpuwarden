@@ -1,6 +1,6 @@
 # gpuwarden in a container: cron lives INSIDE the image, so the host gets no new system daemon.
 # The tool only makes HTTPS calls to RunPod — no Docker socket, no privileged mode, no docker-in-docker.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 # >= v3.0.0 required: older builds call REST v1 (rest.runpod.io), retired by RunPod on 2026-11-15.
 ARG RUNPODCTL_VERSION=v3.1.1
