@@ -67,7 +67,7 @@ uv tool uninstall gpuwarden          # clean removal
 > Installing from a local path you just edited? Use `--force --reinstall`; `--force` alone can
 > silently reuse a cached wheel.
 
-Needs `runpodctl`, `python3`, `bash`, `curl` on the host, plus a cron daemon if you want a schedule.
+Needs `runpodctl` v3.0.0 or newer (REST v2; tested with v3.1.1), `python3`, `bash`, `curl` on the host, plus a cron daemon if you want a schedule.
 
 ## Configure
 

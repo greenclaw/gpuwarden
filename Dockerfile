@@ -2,7 +2,8 @@
 # The tool only makes HTTPS calls to RunPod — no Docker socket, no privileged mode, no docker-in-docker.
 FROM python:3.12-slim
 
-ARG RUNPODCTL_VERSION=v2.7.2
+# >= v3.0.0 required: older builds call REST v1 (rest.runpod.io), retired by RunPod on 2026-11-15.
+ARG RUNPODCTL_VERSION=v3.1.1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash curl ca-certificates cron tini tzdata \
