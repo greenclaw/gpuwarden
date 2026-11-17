@@ -83,3 +83,16 @@ def test_create_failure_reason_is_reported(tmp_path):
     r = subprocess.run(["bash", str(CLOUD), "up", "lbl"], env=env, capture_output=True, text=True, timeout=30)
     assert r.returncode == 1
     assert "pod create failed" in r.stderr and "no instances available" in r.stderr
+
+
+def test_uncertain_create_is_urgent_not_a_plain_failure(tmp_path):
+    # runpodctl v3: the create was accepted but its reply was unreadable — a pod may be billing with no id
+    fake_bin(tmp_path, "runpodctl", 'echo \'{"error":"the create was accepted but its reply could not be read; '
+             'pod id unknown","code":"create_uncertain"}\' >&2\nexit 1\n')
+    (tmp_path / "models/lbl").mkdir(parents=True)
+    (tmp_path / "models/lbl/serve.env").write_text(SERVE_ENV)
+    env = dict(os.environ, PATH=f"{tmp_path}/bin:{os.environ['PATH']}", MODELS_DIR=f"{tmp_path}/models",
+               RUNPOD_API_KEY="k", VLLM_POD_KEY="test-endpoint-key-7f3a")
+    r = subprocess.run(["bash", str(CLOUD), "up", "lbl"], env=env, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 1
+    assert "URGENT" in r.stderr
