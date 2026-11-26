@@ -84,6 +84,16 @@ cp examples/serve.env.example ~/models/my-model/serve.env   # then edit it
 gwctl set --models-dir ~/models --model my-model
 ```
 
+`gwctl serve` (bare metal) also accepts `VLLM_EXTRA_API_KEYS=k1,k2` (comma- or whitespace-separated)
+in `keys.env`: each extra consumer gets its own key, revocable without touching `VLLM_API_KEY`
+(still required; `verify` uses it). Keys go to vLLM as `--api-key K1 K2 ...` (never written to
+`compose.yaml`) and must match `[A-Za-z0-9._~+/=-]`, not starting with `-`.
+
+- Any key change needs `gwctl serve` again, which recreates the container (a vLLM cold start).
+- Keys are in the vLLM process argv: local users can see them via `ps` unless `/proc` is mounted with `hidepid=2`.
+- vLLM's key check covers only `/v1`, `/v2` and `/inference`; `/invocations` stays open, so the network rule is the real boundary.
+- If `RUNPOD_API_KEY` is set in the real environment, `keys.env` is not read at all, so extras written there are ignored (set them in the env too).
+
 Config lives in `~/.config/gpuwarden/scheduler.conf` (override with `GPUWARDEN_CONF_DIR`), outside any
 checkout, so the tool and your model configs update independently.
 
