@@ -293,3 +293,47 @@ def test_bad_key_refuses_before_anything_is_stopped(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         metal.cmd_serve(c, a)
     assert calls == []
+
+
+# ---- verify HTTP: own User-Agent (Cloudflare 1010 on python-urllib) and /v1-tolerant base URL ----
+
+class _Resp:
+    status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return b'{"data": [], "choices": [{"message": {}}]}'
+
+
+def _capture(monkeypatch):
+    from gpuwarden import metal
+    seen = []
+    monkeypatch.setattr(metal.urllib.request, "urlopen",
+                        lambda req, timeout=None: seen.append(req) or _Resp())
+    return seen
+
+
+def test_get_sends_gpuwarden_user_agent(monkeypatch):
+    from gpuwarden import __version__, metal
+    seen = _capture(monkeypatch)
+    metal._get("https://x.example/v1/models", "k")
+    assert seen[0].get_header("User-agent") == f"gpuwarden/{__version__}"
+
+
+def test_every_request_helper_carries_the_user_agent(monkeypatch):
+    from gpuwarden import __version__, metal
+    req = metal._request("https://x.example/v1/chat/completions", "k", data=b"{}")
+    assert req.get_header("User-agent") == f"gpuwarden/{__version__}"
+    assert req.get_header("Authorization") == "Bearer k"
+
+
+@pytest.mark.parametrize("url", ["https://x.example", "https://x.example/",
+                                 "https://x.example/v1", "https://x.example/v1/"])
+def test_base_url_accepts_with_or_without_v1(url):
+    from gpuwarden.metal import _base_url
+    assert _base_url(url) == "https://x.example"

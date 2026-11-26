@@ -353,10 +353,26 @@ def extra_api_keys(env: dict, main: str) -> list:
     return keys
 
 
-def _get(url: str, key: str = "", timeout: int = 8):
-    req = urllib.request.Request(url)
+def _request(url: str, key: str = "", data: bytes | None = None) -> urllib.request.Request:
+    """The one place HTTP requests are built. urllib's default Python-urllib User-Agent is
+    refused (403, error 1010) by Cloudflare in front of hosted-pod proxy URLs."""
+    from . import __version__
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": f"gpuwarden/{__version__}"})
     if key:
         req.add_header("Authorization", f"Bearer {key}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    return req
+
+
+def _base_url(url: str) -> str:
+    """--url may be the base or the /v1 form gwctl prints; verify appends /v1/... itself."""
+    url = url.rstrip("/")
+    return url[:-3].rstrip("/") if url.endswith("/v1") else url
+
+
+def _get(url: str, key: str = "", timeout: int = 8):
+    req = _request(url, key)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, r.read().decode()
@@ -472,7 +488,7 @@ def cmd_serve(c, a) -> int:
 def cmd_verify(c, a) -> int:
     container = getattr(a, "container", None)
     if a.url:
-        return _verify(c, None, a.url.rstrip("/"), _vllm_key(c), container=container)
+        return _verify(c, None, _base_url(a.url), _vllm_key(c), container=container)
     if not a.label:
         sys.exit("verify: give a <label> or --url")
     e = read_serve_env(c, a.label)
@@ -522,9 +538,7 @@ def _verify(c, e, base: str, key: str, container=None) -> int:
                 "client": {"type": "string"},
                 "amounts": {"type": "array", "items": {"type": "number"}}},
                 "required": ["client", "amounts"]}}}]})
-    req = urllib.request.Request(base + "/v1/chat/completions", data=payload.encode(),
-                                 headers={"Authorization": f"Bearer {key}",
-                                          "Content-Type": "application/json"})
+    req = _request(base + "/v1/chat/completions", key, data=payload.encode())
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
             choice = json.loads(r.read())["choices"][0]
