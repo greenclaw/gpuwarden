@@ -1,6 +1,13 @@
 """Pure-function checks behind `gwctl provision / serve / verify`.
 
 Each case is a state a real box was caught in; the parsers must name it, not guess."""
+import json
+import os
+import shutil
+import subprocess
+
+import pytest
+
 from gpuwarden.metal import (
     aside_action,
     compose_project,
@@ -9,7 +16,9 @@ from gpuwarden.metal import (
     driver_drift,
     driver_packages,
     engine_facts,
+    extra_api_keys,
     module_version,
+    render_compose,
     rollback_plan,
     serve_claimants,
     stale_cdi_paths,
@@ -181,3 +190,106 @@ def test_plain_serve_stays_idempotent_and_refuses_foreign_names():
     assert aside_action(exists_project="lbl", project="lbl", replace=False) == "inplace"
     assert aside_action(exists_project="vllm", project="lbl", replace=False) == "refuse"
     assert aside_action(exists_project=None, project="lbl", replace=True) == "fresh"
+
+
+E = {"_label": "m", "IMAGE": "img@sha256:0", "MODEL": "org/m", "SERVED_NAME": "m",
+     "TOOL_PARSER": "some-parser", "MAXLEN": "4096"}
+
+
+def test_compose_takes_keys_through_api_key_interpolation_never_values():
+    out = render_compose(E)
+    assert "--api-key ${VLLM_API_KEY:?" in out and "${VLLM_EXTRA_API_KEYS:-}" in out
+    assert "--config" not in out and "api-keys" not in out
+    assert "fake-" not in out                           # values only ever come from the environment
+
+
+@pytest.mark.skipif(not shutil.which("docker"), reason="needs the docker compose CLI (config only, no daemon)")
+def test_compose_argv_one_entry_per_key_and_a_key_change_changes_the_command(tmp_path):
+    f = tmp_path / "compose.yaml"
+    f.write_text(render_compose(E))
+
+    def argv(extras):
+        r = subprocess.run(["docker", "compose", "-f", str(f), "config", "--format", "json"],
+                           env={**os.environ, "VLLM_API_KEY": "fake-main", "VLLM_EXTRA_API_KEYS": extras},
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            pytest.skip("docker compose config unavailable")
+        return json.loads(r.stdout)["services"]["vllm"]["command"]
+
+    none, two, other = argv(""), argv("fake-a fake-b"), argv("fake-a fake-c")
+    assert none[-2:] == ["--api-key", "fake-main"]                  # empty extras: no empty argv entry
+    assert two[-4:] == ["--api-key", "fake-main", "fake-a", "fake-b"]
+    assert two != other and two != none      # different command => `up -d` recreates the container
+
+
+def test_extra_keys_split_on_commas_and_whitespace():
+    assert extra_api_keys({"VLLM_EXTRA_API_KEYS": "fake-a, fake-b\nfake-c fake-d"}, "fake-main") == \
+        ["fake-a", "fake-b", "fake-c", "fake-d"]
+
+
+@pytest.mark.parametrize("raw", [None, "", "  \n "])
+def test_no_extras_is_fine(raw):
+    assert extra_api_keys({"VLLM_EXTRA_API_KEYS": raw} if raw is not None else {}, "fake-main") == []
+
+
+@pytest.mark.parametrize("raw,why", [
+    ("fake-a,,fake-b", "empty"), ("fake-a,", "empty"), ("fake-a fake-a", "duplicate"),
+    ("fake-main", "main key"), ("fa'ke", "unsafe"), ('fa"ke', "unsafe"), ("fa$ke", "unsafe"),
+    ("fa\\ke", "unsafe"), ("-fakeX", "unsafe"), ("fake;x", "unsafe"), ("fake&x", "unsafe")])
+def test_bad_extras_refuse_without_printing_a_key(raw, why):
+    with pytest.raises(SystemExit) as ex:
+        extra_api_keys({"VLLM_EXTRA_API_KEYS": raw}, "fake-main")
+    msg = str(ex.value)
+    assert msg.startswith("FATAL") and why in msg and "fake" not in msg and raw not in msg
+
+
+@pytest.mark.parametrize("main", ["fa ke", "-fake-main", "fake;main", ""])
+def test_unsafe_main_key_refuses_without_printing_it(main):
+    with pytest.raises(SystemExit) as ex:
+        extra_api_keys({}, main)
+    assert "main API key" in str(ex.value) and "VLLM_API_KEY" in str(ex.value)   # source named generically
+    assert "fake" not in str(ex.value)
+
+
+def _serve_fixture(tmp_path, monkeypatch, up_rc):
+    import argparse
+
+    from gpuwarden import metal
+    (tmp_path / "models" / "m").mkdir(parents=True)
+    (tmp_path / "models" / "m" / "serve.env").write_text(
+        "IMAGE=img@sha256:0\nMODEL=org/m\nSERVED_NAME=m\nTOOL_PARSER=some-parser\nMAXLEN=4096\n")
+    kf = tmp_path / "cfg" / "keys.env"
+    c = {"MODELS_DIR": str(tmp_path / "models"), "KEYS_FILE": str(kf), "LOG_FILE": str(tmp_path / "log")}
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append((cmd, kw.get("env")))
+        rc = up_rc if cmd[:2] == ["docker", "compose"] else 1 if cmd[:2] == ["docker", "inspect"] else 0
+        return subprocess.CompletedProcess(cmd, rc, "", "")
+
+    monkeypatch.setattr(metal.subprocess, "run", fake_run)
+    monkeypatch.setattr(metal, "running_containers", lambda: [])
+    monkeypatch.setenv("VLLM_API_KEY", "fake-main")
+    monkeypatch.setenv("VLLM_EXTRA_API_KEYS", "fake-qa")
+    return metal, c, kf, calls, argparse.Namespace(label="m", replace=False)
+
+
+def test_serve_hands_keys_to_compose_through_the_up_env_and_writes_no_key_file(tmp_path, monkeypatch, capsys):
+    metal, c, kf, calls, a = _serve_fixture(tmp_path, monkeypatch, up_rc=0)
+    monkeypatch.setattr(metal, "_get", lambda *x, **y: (200, ""))
+    monkeypatch.setattr(metal, "_verify", lambda *x, **y: 0)
+    assert metal.cmd_serve(c, a) == 0
+    (_, env), = [x for x in calls if x[0][:2] == ["docker", "compose"]]
+    assert env["VLLM_API_KEY"] == "fake-main" and env["VLLM_EXTRA_API_KEYS"] == "fake-qa"
+    assert not kf.parent.exists()                       # nothing wrote a key file
+    out = capsys.readouterr().out + (tmp_path / "log").read_text()
+    assert "1 extra API key(s)" in out and "fake-" not in out
+    assert "fake-" not in (tmp_path / "models" / "m" / "compose.yaml").read_text()
+
+
+def test_bad_key_refuses_before_anything_is_stopped(tmp_path, monkeypatch):
+    metal, c, kf, calls, a = _serve_fixture(tmp_path, monkeypatch, up_rc=0)
+    monkeypatch.setenv("VLLM_EXTRA_API_KEYS", "-fake-qa")
+    with pytest.raises(SystemExit):
+        metal.cmd_serve(c, a)
+    assert calls == []

@@ -19,6 +19,14 @@ Hard-won rules this module encodes (each cost a real incident):
   * vLLM does NOT auto-enable prefix caching for hybrid-Mamba models (Qwen3.6-A3B & friends);
     omit --enable-prefix-caching and you silently serve a config no benchmark was taken on.
   * An empty VLLM_API_KEY means an unauthenticated OpenAI endpoint — refuse, never hope.
+  * Extra consumers get their own key: VLLM_EXTRA_API_KEYS in KEYS_FILE/env (comma- or
+    whitespace-separated; the main VLLM_API_KEY stays required and is what verify uses). Keys reach
+    vLLM as `--api-key K1 K2 ...` via compose interpolation, never written into compose.yaml; they
+    are in the vLLM process argv (visible to local users via ps unless /proc has hidepid=2). Any key
+    change = run `gwctl serve` again: the interpolated command differs, so compose recreates the
+    container (a cold start).
+    Adding or removing one needs a vLLM restart = a cold start. vLLM's key check covers only /v1,
+    /v2 and /inference — /invocations stays open, so the network rule is the real cut-off.
   * A driver upgrade under a running serve is invisible until the next restart: the loaded module
     stays old, userspace goes new, NVML refuses to init, and the stale CDI spec still names the old
     libraries. provision checks module-vs-userspace, CDI mount sources, and that the driver is held.
@@ -82,8 +90,9 @@ def render_compose(e: dict) -> str:
     args = "\n".join(f"      {x}" for x in vllm_args(e))
     cache = e.get("HF_CACHE", "~/.cache/huggingface").replace("~", "${HOME}")
     return f"""# rendered by `gwctl render {e['_label']}` from serve.env — regenerate, don't hand-edit
-# VLLM_API_KEY must be in the environment at `up` time (gwctl serve injects it from KEYS_FILE);
-# the ${{...:?}} guard makes a bare `docker compose up` fail closed instead of serving keyless.
+# Keys are interpolated from the environment at `up` time (gwctl serve injects them from KEYS_FILE),
+# never written here. The ${{...:?}} guard makes a bare `docker compose up` fail closed instead of
+# serving keyless; VLLM_EXTRA_API_KEYS is space-joined, so empty adds no argv entry.
 services:
   vllm:
     image: {e['IMAGE']}
@@ -91,8 +100,6 @@ services:
     restart: unless-stopped
     network_mode: host
     ipc: host
-    environment:
-      VLLM_API_KEY: ${{VLLM_API_KEY:?refusing to serve an unauthenticated endpoint}}
     volumes:
       - {cache}:/root/.cache/huggingface
     deploy:
@@ -104,6 +111,7 @@ services:
               capabilities: [gpu]
     command: >
 {args}
+      --api-key ${{VLLM_API_KEY:?refusing to serve an unauthenticated endpoint}} ${{VLLM_EXTRA_API_KEYS:-}}
 """
 
 
@@ -116,6 +124,7 @@ def render_k8s(e: dict) -> str:
     return f"""# rendered by `gwctl render {e['_label']} --target k8s` — STARTING POINT, review before applying.
 # Prereqs: NVIDIA GPU operator (or device plugin); a Secret with the endpoint key:
 #   kubectl create secret generic {name}-key --from-literal=VLLM_API_KEY=...
+# (extra API keys are not rendered for k8s)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -134,6 +143,7 @@ spec:
           args:
 {args}
           env:
+            # ponytail: single secretKeyRef; extra keys (VLLM_EXTRA_API_KEYS) not rendered for k8s yet
             - name: VLLM_API_KEY
               valueFrom: {{secretKeyRef: {{name: {name}-key, key: VLLM_API_KEY}}}}
           ports:
@@ -319,6 +329,30 @@ def _vllm_key(c: dict) -> str:
     return key.strip()
 
 
+KEY_OK = re.compile(r"[A-Za-z0-9._~+/=][A-Za-z0-9._~+/=-]*")   # no leading '-': argparse would take it
+
+
+def extra_api_keys(env: dict, main: str) -> list:
+    """Validated VLLM_EXTRA_API_KEYS, and the main key's charset. Runs before serve touches anything.
+    Messages never carry a key value."""
+    if not KEY_OK.fullmatch(main):
+        sys.exit("FATAL: the main API key (VLLM_API_KEY / VLLM_POD_KEY) has characters outside "
+                 "[A-Za-z0-9._~+/=-] or starts with '-' — refusing")
+    raw = (env.get("VLLM_EXTRA_API_KEYS") or "").strip()
+    keys = re.split(r"\s*,\s*|\s+", raw) if raw else []
+    for i, k in enumerate(keys, 1):
+        if not k:
+            sys.exit(f"FATAL: VLLM_EXTRA_API_KEYS item #{i} is empty — refusing")
+        if not KEY_OK.fullmatch(k):
+            sys.exit(f"FATAL: VLLM_EXTRA_API_KEYS item #{i} is unsafe (allowed: [A-Za-z0-9._~+/=-], "
+                     "no leading '-') — refusing")
+        if k == main:
+            sys.exit(f"FATAL: VLLM_EXTRA_API_KEYS item #{i} equals the main key — refusing")
+    if len(set(keys)) != len(keys):
+        sys.exit("FATAL: VLLM_EXTRA_API_KEYS has a duplicate key — refusing")
+    return keys
+
+
 def _get(url: str, key: str = "", timeout: int = 8):
     req = urllib.request.Request(url)
     if key:
@@ -362,9 +396,10 @@ def _rollback(c, own: str, replaced: list, base_port: str = "8000", renamed=None
 
 
 def cmd_serve(c, a) -> int:
-    from .cli import log
+    from .cli import load_keys, log
     e = read_serve_env(c, a.label)
     key = _vllm_key(c)
+    extras = extra_api_keys(load_keys(c), key)
     own, project = container_name(e), compose_project(a.label)
     renamed = {}
     st = subprocess.run(["docker", "inspect", "-f",
@@ -393,12 +428,15 @@ def cmd_serve(c, a) -> int:
             replaced.append(r)
     compose = e["_path"].with_name("compose.yaml")
     compose.write_text(render_compose(e))
+    if extras:
+        log(c, f"serve: {len(extras)} extra API key(s) applied (main key + extras all accepted)")
     log(c, f"serve: {a.label} — compose rendered, starting (cold start = pull + weights + compile)")
     up = ["docker", "compose", "-f", str(compose), "-p", project, "up", "-d"]
     if getattr(a, "recreate", False):          # fresh engine = empty prefix cache, same config
         up.append("--force-recreate")
     r = subprocess.run(up,
-                       env={**os.environ, "VLLM_API_KEY": key}, capture_output=True, text=True)
+                       env={**os.environ, "VLLM_API_KEY": key,
+                            "VLLM_EXTRA_API_KEYS": " ".join(extras)}, capture_output=True, text=True)
     if r.returncode != 0:
         log(c, f"serve: docker compose FAILED rc={r.returncode}\n{(r.stderr or '').strip()[-600:]}")
         return _rollback(c, own, replaced, base_port=e.get("PORT", "8000"), renamed=renamed)
